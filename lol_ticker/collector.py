@@ -2,8 +2,9 @@
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from . import config, db, kalshi, polymarket, util
+from . import config, db, http, kalshi, polymarket, util
 
 log = logging.getLogger("collector")
 
@@ -81,94 +82,176 @@ def discover(conn, include_closed_pm=False, pm_closed_pages=2):
 
 # ---------------------------------------------------------------- backfill
 
-def backfill(conn, limit=None, min_volume=0.0):
-    """Capture trade + price history for terminal markets not yet backfilled."""
+LONG_LIVED = 21 * 86400  # season/tournament markets: coarser price backfill
+
+
+def backfill(conn, limit=None, workers=8):
+    """Capture trade + price history for terminal markets not yet backfilled.
+
+    Workers do the network fetches concurrently (per-host rate limiting still
+    applies globally); only this thread touches the database.  Polymarket
+    markets are grouped by condition so the shared trade tape is fetched once,
+    and zero-volume markets skip their history requests entirely.
+    """
     rows = conn.execute(
-        """SELECT * FROM markets WHERE backfilled = 0 AND (
+        """SELECT platform, market_id, event_id, series, condition_id,
+                  game_start_ts, open_ts, close_ts,
+                  raw->>'volumeNum' AS vol_a, raw->>'volume' AS vol_b,
+                  raw->>'volume_fp' AS vol_c
+           FROM markets WHERE backfilled = 0 AND (
                (platform = 'polymarket' AND status = 'closed') OR
                (platform = 'kalshi' AND status IN ('settled', 'finalized'))
            ) ORDER BY close_ts DESC""").fetchall()
     if limit:
         rows = rows[:limit]
-    done = 0
+    if not rows:
+        return 0
+    k_tasks = []  # each: [market dict]
+    pm_groups = {}
     for m in rows:
-        try:
-            _backfill_one(conn, m)
-            conn.commit()
-            done += 1
-        except Exception:
-            log.exception("backfill failed for %s/%s", m["platform"], m["market_id"])
-            conn.rollback()  # clear any aborted transaction state
-    log.info("backfill: completed %d of %d pending markets", done, len(rows))
+        m = dict(m)
+        if m["platform"] == "kalshi":
+            k_tasks.append([m])
+        else:
+            pm_groups.setdefault(m["condition_id"] or m["market_id"], []).append(m)
+    p_tasks = list(pm_groups.values())
+    log.info("backfill: %d markets pending (%d kalshi + %d polymarket tasks, "
+             "%d workers)", len(rows), len(k_tasks), len(p_tasks), workers)
+
+    done = failed = 0
+    t0 = time.time()
+    last_log = t0
+    # separate pools so Kalshi's slower rate budget can't starve Polymarket:
+    # each platform saturates its own request budget concurrently
+    k_pool = ThreadPoolExecutor(max_workers=3)
+    p_pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futures = {k_pool.submit(_fetch_history, "kalshi", g): g for g in k_tasks}
+        futures.update(
+            {p_pool.submit(_fetch_history, "polymarket", g): g for g in p_tasks})
+        for fut in as_completed(futures):
+            group = futures[fut]
+            try:
+                _store_history(conn, fut.result())
+                conn.commit()
+                done += len(group)
+            except Exception:
+                conn.rollback()
+                failed += len(group)
+                log.exception("backfill failed for %s/%s",
+                              group[0]["platform"], group[0]["market_id"])
+            if time.time() - last_log >= 30:
+                last_log = time.time()
+                n = done + failed
+                rate = n / max(1e-9, last_log - t0)
+                log.info("backfill: %d/%d markets (%.1f/s, ~%dmin left)",
+                         n, len(rows), rate, (len(rows) - n) / max(rate, 1e-9) / 60)
+        k_pool.shutdown()
+        p_pool.shutdown()
+    except (KeyboardInterrupt, SystemExit):
+        # ^C: drop queued tasks and unblock in-flight waits so exit is prompt;
+        # everything not yet stored stays pending and resumes next run
+        log.info("backfill interrupted at %d/%d — cancelling queued tasks",
+                 done + failed, len(rows))
+        http.SHUTDOWN.set()
+        k_pool.shutdown(wait=False, cancel_futures=True)
+        p_pool.shutdown(wait=False, cancel_futures=True)
+        conn.rollback()
+        raise
+    log.info("backfill: completed %d of %d pending markets (%d failed)",
+             done, len(rows), failed)
     return done
 
 
-LONG_LIVED = 21 * 86400  # season/tournament markets: coarser price backfill
+def _market_volume(m):
+    """Reported lifetime volume, extracted from the raw exchange json in SQL."""
+    for key in ("vol_a", "vol_b", "vol_c"):
+        v = m.get(key)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                pass
+    return None  # unknown -> don't skip
 
 
-def _backfill_one(conn, m):
-    platform, mid = m["platform"], m["market_id"]
-    start = m["open_ts"] or (m["game_start_ts"] or now_s()) - 7 * 86400
-    # close_ts can be a future resolution deadline; history only exists up to now
-    end = min(m["close_ts"] or now_s(), now_s())
-    start = min(start, end)
-    life = max(0, end - start)
-    if platform == "polymarket":
-        # trades are the full-life tick record and are per condition id; pull
-        # once per condition (both outcome tokens arrive together)
-        if m["condition_id"]:
-            already = conn.execute(
-                """SELECT COUNT(*) AS c FROM markets WHERE platform='polymarket'
-                   AND condition_id = %s AND backfilled = 1""",
-                (m["condition_id"],)).fetchone()["c"]
-            if not already:
-                db.insert_trades(conn, polymarket.fetch_trades(m["condition_id"]))
-            # trading may have stopped long before close_ts (early resolution);
-            # anchor the price window to the last real trade
-            last = conn.execute(
-                """SELECT EXTRACT(EPOCH FROM MAX(ts))::bigint AS t FROM trades
-                   WHERE platform='polymarket'
-                   AND market_id IN (SELECT market_id FROM markets
-                       WHERE platform='polymarket' AND condition_id = %s)""",
-                (m["condition_id"],)).fetchone()["t"]
-            if last:
-                end = min(end, last + 86400)
-        # price series: whole life at 10-min for match markets; long-lived
-        # season markets only get the final weeks (trades cover the rest)
-        coarse_start = start if life <= LONG_LIVED else max(start, end - LONG_LIVED)
-        pts = polymarket.fetch_price_history(mid, coarse_start, end, fidelity=10)
-        db.insert_price_points(conn, platform, mid, 10, pts)
-        # 1-min fidelity around the game window when known
-        if m["game_start_ts"]:
-            g = m["game_start_ts"]
-            fine = polymarket.fetch_price_history(
-                mid, max(start, g - 3600), min(end, g + config.FAST_AFTER), fidelity=1)
-            db.insert_price_points(conn, platform, mid, 1, fine)
+def _fetch_history(kind, group):
+    """Network-only: fetch a task group's full history.  Runs in a worker."""
+    payload = {"trades": [], "points": [], "candles": [], "markets": group}
+    if kind == "polymarket":
+        m0 = group[0]
+        vol = sum(_market_volume(m) or 1 for m in group)
+        if m0["condition_id"] and vol > 0:
+            payload["trades"] = polymarket.fetch_trades(m0["condition_id"])
+        by_token = {}
+        for r in payload["trades"]:
+            by_token.setdefault(r[2], []).append(r[3])
+        for m in group:
+            token_ts = by_token.get(m["market_id"])
+            if not token_ts:
+                continue  # price history mirrors trades: no trades, no series
+            start, end = _history_window(m, last_trade=max(token_ts))
+            life = max(0, end - start)
+            coarse_start = start if life <= LONG_LIVED else max(start, end - LONG_LIVED)
+            payload["points"].append(
+                (m["market_id"], 10,
+                 polymarket.fetch_price_history(m["market_id"], coarse_start, end, 10)))
+            if m["game_start_ts"]:
+                g = m["game_start_ts"]
+                fine = polymarket.fetch_price_history(
+                    m["market_id"], max(start, g - 3600),
+                    min(end, g + config.FAST_AFTER), 1)
+                payload["points"].append((m["market_id"], 1, fine))
     else:
-        db.insert_trades(conn, kalshi.fetch_trades(mid))
-        last = conn.execute(
-            """SELECT EXTRACT(EPOCH FROM MAX(ts))::bigint AS t FROM trades
-               WHERE platform='kalshi' AND market_id = %s""",
-            (mid,)).fetchone()["t"]
-        if last:
-            end = min(end, last + 86400)
+        m = group[0]
+        vol = _market_volume(m)
+        if vol == 0.0:
+            return payload  # nothing ever traded; candles would be empty too
+        payload["trades"] = kalshi.fetch_trades(m["market_id"])
+        last = max((r[3] for r in payload["trades"]), default=None)
+        start, end = _history_window(m, last_trade=last)
+        life = max(0, end - start)
         if life <= LONG_LIVED:
-            candles = kalshi.fetch_candles(m["series"], mid, start, end, period_min=1)
-            db.insert_candles(conn, "kalshi", mid, 1, candles)
+            payload["candles"].append(
+                (m["market_id"], 1,
+                 kalshi.fetch_candles(m["series"], m["market_id"], start, end, 1)))
         else:
-            db.insert_candles(conn, "kalshi", mid, 60,
-                              kalshi.fetch_candles(m["series"], mid, start, end, period_min=60))
-            db.insert_candles(conn, "kalshi", mid, 1,
-                              kalshi.fetch_candles(m["series"], mid, max(start, end - 3 * 86400), end, period_min=1))
-    # flag markets whose game window overlapped an exchange outage
-    if m["game_start_ts"]:
-        overlaps = db.outages_overlapping(
-            conn, platform, m["game_start_ts"] - config.FAST_BEFORE,
-            m["game_start_ts"] + config.FAST_AFTER)
-        if overlaps:
-            db.set_market_fields(conn, platform, mid, outage_affected=1)
-    db.set_market_fields(conn, platform, mid, backfilled=1)
-    log.info("backfilled %s/%s", platform, mid)
+            payload["candles"].append(
+                (m["market_id"], 60,
+                 kalshi.fetch_candles(m["series"], m["market_id"], start, end, 60)))
+            payload["candles"].append(
+                (m["market_id"], 1,
+                 kalshi.fetch_candles(m["series"], m["market_id"],
+                                      max(start, end - 3 * 86400), end, 1)))
+    return payload
+
+
+def _history_window(m, last_trade=None):
+    """[start, end] bounds for history fetches: clamp future resolution
+    deadlines to now, and anchor the end to the last real trade if known."""
+    start = m["open_ts"] or (m["game_start_ts"] or now_s()) - 7 * 86400
+    end = min(m["close_ts"] or now_s(), now_s())
+    if last_trade:
+        end = min(end, last_trade + 86400)
+    return min(start, end), end
+
+
+def _store_history(conn, payload):
+    """DB-only: persist a fetched payload.  Runs on the main thread."""
+    db.insert_trades(conn, payload["trades"])
+    platform = payload["markets"][0]["platform"]
+    for market_id, fidelity, pts in payload["points"]:
+        db.insert_price_points(conn, platform, market_id, fidelity, pts)
+    for market_id, period, rows in payload["candles"]:
+        db.insert_candles(conn, platform, market_id, period, rows)
+    for m in payload["markets"]:
+        if m["game_start_ts"]:
+            overlaps = db.outages_overlapping(
+                conn, platform, m["game_start_ts"] - config.FAST_BEFORE,
+                m["game_start_ts"] + config.FAST_AFTER)
+            if overlaps:
+                db.set_market_fields(conn, platform, m["market_id"], outage_affected=1)
+        db.set_market_fields(conn, platform, m["market_id"], backfilled=1)
 
 
 # ---------------------------------------------------------------- recording
@@ -223,14 +306,19 @@ def _poll_trades(conn, markets):
     seen_conditions = set()
     for m in markets:
         cutoff = max(0, (m["last_trade_ts"] or 0) - 60)
-        if m["platform"] == "polymarket":
-            c = m["condition_id"]
-            if not c or c in seen_conditions:
-                continue
-            seen_conditions.add(c)
-            rows = polymarket.fetch_trades(c, after_ts=cutoff, max_pages=4)
-        else:
-            rows = kalshi.fetch_trades(m["market_id"], min_ts=cutoff, max_pages=4)
+        try:
+            if m["platform"] == "polymarket":
+                c = m["condition_id"]
+                if not c or c in seen_conditions:
+                    continue
+                seen_conditions.add(c)
+                rows = polymarket.fetch_trades(c, after_ts=cutoff, max_pages=4)
+            else:
+                rows = kalshi.fetch_trades(m["market_id"], min_ts=cutoff, max_pages=4)
+        except Exception as e:
+            log.warning("incremental trades failed for %s/%s: %s",
+                        m["platform"], m["market_id"], e)
+            continue
         if rows:
             new += max(0, db.insert_trades(conn, rows))
             newest = max(r[3] for r in rows)
@@ -297,7 +385,7 @@ def record(conn, once=False):
                     log.info("stored %d new trades", n)
                 last_trades = t
             if t - last_backfill >= config.DISCOVER_EVERY:
-                backfill(conn, limit=20)
+                backfill(conn, limit=20, workers=4)
                 last_backfill = t
         except KeyboardInterrupt:
             raise

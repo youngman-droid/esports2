@@ -138,13 +138,10 @@ def fetch_candles(series, ticker, start_ts, end_ts, period_min=1):
     t0 = start_ts
     while t0 < end_ts:
         t1 = min(t0 + step, end_ts)
-        try:
-            data = get_json(
-                config.KALSHI + "/series/%s/markets/%s/candlesticks" % (series, ticker),
-                {"start_ts": t0, "end_ts": t1, "period_interval": period_min})
-        except HttpError as e:
-            log.warning("candles %s failed: %s", ticker, e)
-            break
+        # errors propagate: history must be complete or the market stays pending
+        data = get_json(
+            config.KALSHI + "/series/%s/markets/%s/candlesticks" % (series, ticker),
+            {"start_ts": t0, "end_ts": t1, "period_interval": period_min})
         for c in data.get("candlesticks", []):
             price = c.get("price") or {}
             # fall back to yes_bid OHLC when no trades printed in the period
@@ -203,11 +200,7 @@ def fetch_trades(ticker, min_ts=0, max_pages=100):
             params["min_ts"] = min_ts
         if cursor:
             params["cursor"] = cursor
-        try:
-            data = get_json(config.KALSHI + "/markets/trades", params)
-        except HttpError as e:
-            log.warning("trades %s failed: %s", ticker, e)
-            break
+        data = get_json(config.KALSHI + "/markets/trades", params)
         trades = data.get("trades", [])
         for t in trades:
             ts = util.parse_ts(t.get("created_time")) or 0

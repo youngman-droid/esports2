@@ -22,6 +22,7 @@ def main():
 
     b = sub.add_parser("backfill", help="pull trades + price history for settled markets")
     b.add_argument("--limit", type=int, default=None, help="max markets this run")
+    b.add_argument("--workers", type=int, default=8, help="concurrent fetch workers")
 
     r = sub.add_parser("record", help="poll live L2 books (daemon)")
     r.add_argument("--once", action="store_true", help="single pass, then exit")
@@ -44,7 +45,10 @@ def main():
     if args.cmd == "discover":
         collector.discover(conn, include_closed_pm=args.all)
     elif args.cmd == "backfill":
-        collector.backfill(conn, limit=args.limit)
+        try:
+            collector.backfill(conn, limit=args.limit, workers=args.workers)
+        except KeyboardInterrupt:
+            print("\nstopped (progress saved; rerun to resume)")
     elif args.cmd == "record":
         try:
             collector.record(conn, once=args.once)

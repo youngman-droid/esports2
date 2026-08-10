@@ -36,8 +36,8 @@ FAST_AFTER = 8 * 3600      # keep fast polling this long after game start
 
 # --- Rate limiting: min seconds between requests, per host ---
 MIN_INTERVAL = {
-    "api.elections.kalshi.com": 0.12,
-    "clob.polymarket.com": 0.06,
+    "api.elections.kalshi.com": 0.20,
+    "clob.polymarket.com": 0.05,
     "gamma-api.polymarket.com": 0.06,
-    "data-api.polymarket.com": 0.06,
+    "data-api.polymarket.com": 0.05,
 }

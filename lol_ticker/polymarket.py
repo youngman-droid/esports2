@@ -148,7 +148,7 @@ def fetch_books(token_ids):
     return out
 
 
-PRICE_CHUNK = {1: 12 * 3600, 10: 5 * 86400}  # max request span by fidelity (API caps span)
+PRICE_CHUNK = {1: 86400, 10: 10 * 86400}  # max request span by fidelity (API caps span)
 
 
 def fetch_price_history(token_id, start_ts, end_ts, fidelity=10):
@@ -162,34 +162,32 @@ def fetch_price_history(token_id, start_ts, end_ts, fidelity=10):
     t0 = start_ts
     while t0 < end_ts:
         t1 = min(t0 + step, end_ts)
-        try:
-            data = get_json(config.PM_CLOB + "/prices-history", {
-                "market": token_id, "startTs": t0, "endTs": t1,
-                "fidelity": fidelity,
-            })
-        except HttpError as e:
-            log.warning("prices-history %s failed: %s", token_id, e)
-            break
+        # errors propagate: history must be complete or the market stays pending
+        data = get_json(config.PM_CLOB + "/prices-history", {
+            "market": token_id, "startTs": t0, "endTs": t1,
+            "fidelity": fidelity,
+        })
         out.extend(data.get("history", []))
         t0 = t1
     return out
+
+
+MAX_TRADE_OFFSET = 10000  # data-api rejects deeper offsets (400)
 
 
 def fetch_trades(condition_id, after_ts=0, max_pages=40):
     """Fetch trades for a condition, newest first, until older than after_ts.
 
     Returns rows: (platform, trade_id, market_id, ts, price, size, side, raw).
+    The API refuses to page past its 10k-trade cap; heavier markets keep their
+    most recent 10k trades and a warning notes the truncation.
     """
     rows = []
     offset = 0
     for _ in range(max_pages):
-        try:
-            page = get_json(config.PM_DATA + "/trades", {
-                "market": condition_id, "limit": 500, "offset": offset,
-            })
-        except HttpError as e:
-            log.warning("trades %s failed: %s", condition_id, e)
-            break
+        page = get_json(config.PM_DATA + "/trades", {
+            "market": condition_id, "limit": 500, "offset": offset,
+        })
         if not page:
             break
         done = False
@@ -211,4 +209,8 @@ def fetch_trades(condition_id, after_ts=0, max_pages=40):
         if done or len(page) < 500:
             break
         offset += 500
+        if offset > MAX_TRADE_OFFSET:
+            log.warning("trade tape truncated at %d rows for %s (api offset cap)",
+                        len(rows), condition_id)
+            break
     return rows
