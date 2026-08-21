@@ -181,16 +181,21 @@ def _fetch_history(kind, group):
     if kind == "polymarket":
         m0 = group[0]
         vol = sum(_market_volume(m) or 1 for m in group)
-        if m0["condition_id"] and vol > 0:
+        if vol == 0.0:
+            return payload  # nothing ever traded on this condition
+        if m0["condition_id"]:
             payload["trades"] = polymarket.fetch_trades(m0["condition_id"])
         by_token = {}
         for r in payload["trades"]:
             by_token.setdefault(r[2], []).append(r[3])
+        # any volume on the condition means BOTH tokens get their price
+        # series: skipping the quiet side samples only winners (losing tokens
+        # go untraded near resolution), which poisons calibration analysis
+        cond_last = max((r[3] for r in payload["trades"]), default=None)
         for m in group:
             token_ts = by_token.get(m["market_id"])
-            if not token_ts:
-                continue  # price history mirrors trades: no trades, no series
-            start, end = _history_window(m, last_trade=max(token_ts))
+            start, end = _history_window(
+                m, last_trade=max(token_ts) if token_ts else cond_last)
             life = max(0, end - start)
             coarse_start = start if life <= LONG_LIVED else max(start, end - LONG_LIVED)
             payload["points"].append(

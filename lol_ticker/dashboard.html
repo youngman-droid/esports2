@@ -1,0 +1,541 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>LoL Ticker</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; margin: 20px auto;
+         max-width: 1100px; color: #222; }
+  h1 { font-size: 20px; display: inline-block; margin-right: 16px; }
+  #kstatus { padding: 3px 10px; border-radius: 12px; font-size: 13px; color: #fff; }
+  .ok { background: #2e9e44; } .bad { background: #d33; } .unk { background: #999; }
+  input[type=text] { width: 320px; padding: 6px; font-size: 14px; }
+  button { padding: 6px 12px; font-size: 14px; cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13px; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #ddd; }
+  tr.game:hover { background: #eef; cursor: pointer; }
+  .badge { background: #d33; color: #fff; border-radius: 8px; padding: 1px 6px; font-size: 11px; }
+  .plat-polymarket { color: #1652f0; font-weight: 600; }
+  .plat-kalshi { color: #0aa574; font-weight: 600; }
+  #markets label { display: block; font-size: 13px; margin: 2px 0; }
+  #markets { max-height: 220px; overflow-y: auto; border: 1px solid #ddd;
+             padding: 8px; margin: 10px 0; }
+  #chartbox { position: relative; height: 420px; }
+  .muted { color: #888; font-size: 12px; }
+  #outages { font-size: 13px; color: #b00; }
+  .cols { display: flex; gap: 24px; align-items: flex-start; }
+  .cols > div { flex: 1; }
+</style>
+</head>
+<body>
+<h1>LoL Ticker</h1><span id="kstatus" class="unk">kalshi: ?</span>
+<div style="margin-top:12px">
+  <input id="q" type="text" placeholder="team / date, e.g. LNG 2026-08-09" autofocus>
+  <button onclick="search()">Search</button>
+  <button onclick="clearChart()">Clear chart</button>
+  <span class="muted">click a game, tick markets to chart; both platforms can share one chart</span>
+</div>
+<div class="cols">
+  <div>
+    <div id="results"></div>
+  </div>
+  <div>
+    <div id="gamehdr" class="muted"></div>
+    <div id="outages"></div>
+    <div id="markets" style="display:none"></div>
+  </div>
+</div>
+<div id="chartbox"><canvas id="chart"></canvas></div>
+
+<h2 style="font-size:17px;margin-top:28px">Calibration</h2>
+<div>
+  <label>odds sampled
+    <select id="cal-horizon">
+      <option value="86400">24h before start</option>
+      <option value="21600">6h before</option>
+      <option value="3600">1h before</option>
+      <option value="0" selected>at scheduled start</option>
+      <option value="-600">10 min after (mid-draft)</option>
+      <option value="-900">15 min after (~post-draft)</option>
+      <option value="-1200">20 min after (early game)</option>
+    </select>
+  </label>
+  <label>bin width
+    <select id="cal-bins">
+      <option value="100" selected>0.01</option>
+      <option value="50">0.02</option>
+      <option value="20">0.05</option>
+      <option value="10">0.10</option>
+    </select>
+  </label>
+  <input id="cal-filter" type="text" placeholder="optional title filter, e.g. LCK or map 1" style="width:220px">
+  <button onclick="calibrate()">Compute</button>
+  <span id="cal-stats" class="muted"></span>
+</div>
+<p class="muted">Each settled market contributes its last price before the cutoff (YES terms)
+vs. its resolution. Polymarket: only conditions where <b>both</b> outcome tokens have a
+pre-cutoff price are included — one-sided sampling is winner-biased and fabricates
+miscalibration. Kalshi: prices are bid/ask midpoints (trade-less candles close at the bid,
+which fakes longshot bias). Use the filter (e.g. "match", "map 1") to slice by market type.
+Point size ∝ sample count. "After start" horizons approximate post-draft odds: LoL drafts run
+~10–15 min past scheduled start (plus delays), so they're most meaningful filtered to game-1 /
+match markets — for map 2+ markets the offset lands mid-series, not post-draft.</p>
+<div id="calbox" style="position:relative;height:420px"><canvas id="calchart"></canvas></div>
+
+<h2 style="font-size:17px;margin-top:28px">Draft analysis</h2>
+<p class="muted">Per-map winner markets matched to Oracle's Elixir game data. For each game,
+a team's win odds are sampled 16 min before actual game start (pre-draft) and 2 min after
+(post-draft); <b>Δ draft</b> is the market's re-rating after seeing the draft, in probability
+points. <b>post-edge</b> = actual wins minus post-draft odds (did reality beat the market's
+read of the draft). Games covered by both platforms count once.</p>
+<div>
+  <label>platform
+    <select id="dr-plat"><option value="">both</option>
+      <option value="kalshi">kalshi</option><option value="polymarket">polymarket</option>
+    </select></label>
+  <input id="dr-league" type="text" placeholder="leagues, e.g. LCK, LPL, LEC, LTA N" style="width:220px">
+  <label>min games <input id="dr-minn" type="number" value="8" style="width:60px"></label>
+  <button onclick="draftAnalysis()">Compute</button>
+  <span id="dr-stats" class="muted"></span>
+</div>
+<div class="cols" style="margin-top:10px">
+  <div><h3 style="font-size:14px">Teams by draft edge</h3><div id="dr-teams"></div></div>
+  <div>
+    <h3 style="font-size:14px">Champions (picked) by draft edge</h3><div id="dr-champs"></div>
+    <h3 style="font-size:14px;margin-top:16px">Champion pairs (same team)</h3><div id="dr-pairs"></div>
+  </div>
+</div>
+
+
+<h2 style="font-size:17px;margin-top:28px">Draft simulator</h2>
+<p class="muted">Walks the competitive draft order (3+3 bans, 6 picks, 2+2 bans, 4 picks).
+Each action's effect is estimated by a ridge model fit on the market's post-draft re-rating
+across all matched games — own/enemy picks, own/enemy bans, same-team synergies, and
+cross-team matchups. Set blue's pre-draft win probability, then fill champions in order;
+the running estimate updates after every action. Champion names follow Oracle's Elixir
+spelling (autocomplete). Picks take an optional role (top/jng/mid/bot/sup) and the patch
+selector applies champion×patch meta effects; both are deviations on top of the base champion
+effect, so leaving them blank falls back to the base. Grey "unseen" = champion not in the
+training data (no effect).</p>
+<div style="margin-bottom:8px">
+  <label>blue pre-draft win % <input id="sim-pre" type="number" min="1" max="99" value="50" style="width:60px"></label>
+  <label style="margin-left:8px">patch <select id="sim-patch"><option value="">(none)</option></select></label>
+  <button onclick="simReset()">Reset</button>
+  <span id="sim-summary" style="margin-left:12px;font-weight:600"></span>
+  <span id="sim-meta" class="muted" style="margin-left:12px"></span>
+</div>
+<datalist id="champlist"></datalist>
+<div class="cols">
+  <div><h3 style="font-size:14px;color:#1652f0">Blue side</h3><div id="sim-blue"></div></div>
+  <div><h3 style="font-size:14px;color:#c22">Red side</h3><div id="sim-red"></div></div>
+</div>
+<div id="sim-log" class="muted" style="margin-top:10px;font-size:12px"></div>
+
+<script>
+const COLORS = ['#1652f0','#0aa574','#d33','#e08b00','#7b3ff2','#0aa5a5',
+                '#b0187b','#5b7a1e','#444','#888'];
+let chart = null, colorIdx = 0, curGame = null, outageSpans = [], gameStart = null;
+
+function fmtT(t){ const d = new Date(t*1000);
+  return d.toISOString().replace('T',' ').slice(0,16)+'Z'; }
+
+// when the page is opened as a file/preview (no http origin), relative URLs
+// have no base — fall back to the local server explicitly
+const API = location.protocol.startsWith('http') ? '' : 'http://127.0.0.1:8090';
+async function getJSON(url){
+  const r = await fetch(API + url);
+  if (!r.ok) throw new Error('HTTP ' + r.status + ' from ' + url);
+  return r.json();
+}
+
+async function refreshStatus(){
+  const s = await getJSON('/api/status');
+  const el = document.getElementById('kstatus');
+  if (s.kalshi_trading_active === true){ el.className='ok'; el.textContent='kalshi: trading active'; }
+  else if (s.kalshi_trading_active === false){
+    el.className='bad';
+    el.textContent = 'kalshi: TRADING PAUSED' + (s.halted_since ? ' since '+fmtT(s.halted_since) : '');
+  } else { el.className='unk'; el.textContent='kalshi: unknown'; }
+}
+refreshStatus(); setInterval(refreshStatus, 60000);
+
+function el(tag, attrs, text){
+  const e = document.createElement(tag);
+  for (const k in (attrs||{})) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+async function search(){
+  const q = document.getElementById('q').value.trim();
+  if(!q) return;
+  const games = await getJSON('/api/search?q='+encodeURIComponent(q));
+  const res = document.getElementById('results');
+  res.innerHTML = '';
+  if (!games.length){ res.innerHTML = '<p class="muted">no games found</p>'; return; }
+  const table = el('table');
+  const hdr = el('tr');
+  for (const h of ['', 'event', 'game start (UTC)', 'mkts', 'data', ''])
+    hdr.appendChild(el('th', {}, h));
+  table.appendChild(hdr);
+  for (const g of games){
+    const tr = el('tr', {class: 'game'});
+    tr.appendChild(el('td', {class: 'plat-'+g.platform}, g.platform));
+    tr.appendChild(el('td', {}, g.event_id));
+    tr.appendChild(el('td', {}, g.game_start_ts ? fmtT(g.game_start_ts) : '?'));
+    tr.appendChild(el('td', {}, String(g.n_markets)));
+    tr.appendChild(el('td', {class: 'muted'},
+      `snap ${g.snapshots} · tr ${g.trades} · cndl ${g.candles} · pts ${g.price_points}`));
+    const flag = el('td');
+    if (g.outage_affected) flag.appendChild(el('span', {class: 'badge'}, 'outage'));
+    tr.appendChild(flag);
+    tr.addEventListener('click', () => openGame(g.platform, g.event_id));
+    table.appendChild(tr);
+  }
+  res.appendChild(table);
+}
+document.getElementById('q').addEventListener('keydown', e => { if(e.key==='Enter') search(); });
+
+async function openGame(platform, eventId){
+  curGame = {platform, eventId};
+  const g = await getJSON(`/api/game?platform=${platform}&event_id=${encodeURIComponent(eventId)}`);
+  gameStart = g.game_start_ts;
+  document.getElementById('gamehdr').textContent =
+    `${platform} / ${eventId} — game start ${g.game_start_ts ? fmtT(g.game_start_ts) : '?'}`;
+  outageSpans = g.outages.map(o => [o.start_ts, o.end_ts || Math.floor(Date.now()/1000)]);
+  document.getElementById('outages').innerHTML = g.outages.length
+    ? '⚠ exchange outage during game window: ' +
+      g.outages.map(o => `${o.kind} ${fmtT(o.start_ts)} → ${o.end_ts ? fmtT(o.end_ts) : 'ongoing'}`).join('; ')
+    : '';
+  const box = document.getElementById('markets');
+  box.style.display = 'block';
+  box.innerHTML = '';
+  for (const m of g.markets){
+    const label = el('label');
+    const cb = el('input', {type: 'checkbox'});
+    const name = `${m.title} [${m.outcome||''}]`;
+    cb.addEventListener('change', () => toggleMarket(cb, m.market_id, name));
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(' ' + m.title + ' '));
+    label.appendChild(el('b', {}, `[${m.outcome||''}]`));
+    const meta = ` ${m.n_trades} trades${m.result ? ' · '+m.result : ''}`;
+    const span = el('span', {class: 'muted'}, meta);
+    if (m.outage_affected){
+      span.appendChild(document.createTextNode(' · '));
+      span.appendChild(el('span', {class: 'badge'}, 'outage'));
+    }
+    label.appendChild(span);
+    box.appendChild(label);
+  }
+}
+
+function ensureChart(){
+  if (chart) return chart;
+  const shade = {
+    id: 'shade',
+    beforeDraw(c){
+      const {ctx, chartArea, scales} = c;
+      if (!chartArea) return;
+      ctx.save();
+      ctx.fillStyle = 'rgba(220,0,0,0.10)';
+      for (const [s,e] of outageSpans){
+        const x1 = scales.x.getPixelForValue(s), x2 = scales.x.getPixelForValue(e);
+        if (x2 < chartArea.left || x1 > chartArea.right) continue;
+        ctx.fillRect(Math.max(x1,chartArea.left), chartArea.top,
+                     Math.min(x2,chartArea.right)-Math.max(x1,chartArea.left),
+                     chartArea.bottom-chartArea.top);
+      }
+      if (gameStart != null){
+        const gx = scales.x.getPixelForValue(gameStart);
+        if (gx >= chartArea.left && gx <= chartArea.right){
+          ctx.strokeStyle = 'rgba(0,140,0,0.6)'; ctx.setLineDash([4,4]);
+          ctx.beginPath(); ctx.moveTo(gx, chartArea.top); ctx.lineTo(gx, chartArea.bottom); ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+  };
+  chart = new Chart(document.getElementById('chart'), {
+    type: 'line', data: {datasets: []},
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      parsing: false, normalized: true,
+      scales: {
+        x: {type: 'linear', ticks: {callback: v => fmtT(v).slice(5)}},
+        y: {min: 0, max: 1, title: {display: true, text: 'YES odds'}}
+      },
+      plugins: {
+        legend: {position: 'bottom', labels: {boxWidth: 12, font: {size: 11}}},
+        tooltip: {callbacks: {title: items => fmtT(items[0].parsed.x)}}
+      },
+      elements: {point: {radius: 0}, line: {borderWidth: 1.5}}
+    },
+    plugins: [shade]
+  });
+  return chart;
+}
+
+async function toggleMarket(cb, marketId, label){
+  const c = ensureChart();
+  const tag = curGame.platform + '|' + marketId;
+  if (!cb.checked){
+    c.data.datasets = c.data.datasets.filter(d => !d.tag || !d.tag.startsWith(tag));
+    c.update(); return;
+  }
+  const s = await getJSON(`/api/series?platform=${curGame.platform}&market_id=${encodeURIComponent(marketId)}`);
+  const color = COLORS[colorIdx++ % COLORS.length];
+  const short = (curGame.platform === 'kalshi' ? 'K: ' : 'P: ') + label.slice(0, 60);
+  if (s.price.length)
+    c.data.datasets.push({tag: tag+'|price', label: short, borderColor: color,
+      data: s.price.map(([t,p]) => ({x: t, y: p}))});
+  if (s.mid.length)
+    c.data.datasets.push({tag: tag+'|mid', label: short+' (L2 mid)', borderColor: color,
+      borderDash: [5,3], data: s.mid.map(([t,p]) => ({x: t, y: p}))});
+  if (!s.price.length && !s.mid.length && s.trades.length)
+    c.data.datasets.push({tag: tag+'|trades', label: short+' (trades)', borderColor: color,
+      showLine: false, pointRadius: 2, data: s.trades.map(([t,p]) => ({x: t, y: p}))});
+  c.update();
+}
+
+
+// ---------------------------------------------------------------- simulator
+let simOrder = null, simActions = [], simRoles = [];
+const ROLES = ['', 'top', 'jng', 'mid', 'bot', 'sup'];
+async function simInit(){
+  const [champs, patches] = await Promise.all([
+    getJSON('/api/draft/champlist'), getJSON('/api/draft/patches')]);
+  const dl = document.getElementById('champlist');
+  dl.innerHTML = '';
+  champs.forEach(c => dl.appendChild(el('option', {value: c})));
+  const ps = document.getElementById('sim-patch');
+  patches.forEach((pt, i) => { const o = el('option', {value: pt}, pt); if (i === 0) o.selected = true; ps.appendChild(o); });
+  ps.addEventListener('change', simRun);
+  const d = await getJSON('/api/draft/simulate?pre=0.5&seq=[]');
+  simOrder = d.order;
+  simRoles = simOrder.map(() => '');
+  document.getElementById('sim-meta').textContent =
+    `model: ${d.model.rows} game-sides, ${d.model.features} features, held-out R² random=${d.model.r2} / next-patch=${d.model.r2_time ?? 'n/a'} (low by nature: champion identity explains little of the market's draft re-rating)`;
+  simActions = simOrder.map(() => '');
+  simRender();
+}
+function simRender(results){
+  const steps = results ? results.steps : [];
+  const byStep = {}; steps.forEach(s => byStep[s.step] = s);
+  for (const side of ['B','R']){
+    const box = document.getElementById(side === 'B' ? 'sim-blue' : 'sim-red');
+    box.innerHTML = '';
+    const table = el('table');
+    const hdr = el('tr'); ['#','action','champion','Δ blue win','blue win'].forEach(h => hdr.appendChild(el('th', {}, h)));
+    table.appendChild(hdr);
+    simOrder.forEach((o, i) => {
+      if (o[0] !== side) return;
+      const tr = el('tr');
+      tr.appendChild(el('td', {class: 'muted'}, String(i + 1)));
+      tr.appendChild(el('td', {}, o[1]));
+      const inp = el('input', {type: 'text', list: 'champlist', value: simActions[i] || '', style: 'width:120px'});
+      inp.addEventListener('change', () => { simActions[i] = inp.value.trim(); simRun(); });
+      const td = el('td'); td.appendChild(inp);
+      if (o[1] === 'pick'){
+        const sel = el('select', {style: 'margin-left:4px'});
+        ROLES.forEach(rl => { const op = el('option', {value: rl}, rl || 'role?'); if (simRoles[i] === rl) op.selected = true; sel.appendChild(op); });
+        sel.addEventListener('change', () => { simRoles[i] = sel.value; simRun(); });
+        td.appendChild(sel);
+      }
+      tr.appendChild(td);
+      const st = byStep[i + 1];
+      const dtd = el('td', {}, st ? pp(st.dp_blue) : '');
+      if (st && st.dp_blue > 0) dtd.style.color = '#0a7a44';
+      if (st && st.dp_blue < 0) dtd.style.color = '#c22';
+      if (st && !st.known) { dtd.textContent = 'unseen'; dtd.style.color = '#888'; }
+      tr.appendChild(dtd);
+      tr.appendChild(el('td', {}, st ? (st.p_blue * 100).toFixed(1) + '%' : ''));
+      table.appendChild(tr);
+    });
+    box.appendChild(table);
+  }
+  const sum = document.getElementById('sim-summary');
+  const log = document.getElementById('sim-log');
+  if (results && steps.length){
+    const last = steps[steps.length - 1];
+    sum.textContent = `blue ${ (results.pre_blue*100).toFixed(0) }% → ${ (last.p_blue*100).toFixed(1) }% (${pp(last.p_blue - results.pre_blue)} pp)`;
+    log.innerHTML = steps.map(s =>
+      `<div><b>${s.step}. ${s.side === 'B' ? 'Blue' : 'Red'} ${s.action} ${s.champion}${s.role ? ' (' + s.role + ')' : ''}</b>: ${pp(s.dp_blue)} pp` +
+      (s.terms.length ? ' — ' + s.terms.map(t => `${t[0].replace(/^(own|enemy)_/, '')} ${t[1] > 0 ? '+' : ''}${t[1]} (n=${t[2]})`).join(', ') : '') +
+      '</div>').join('');
+  } else { sum.textContent = ''; log.innerHTML = ''; }
+}
+async function simRun(){
+  const pre = Math.min(99, Math.max(1, parseFloat(document.getElementById('sim-pre').value) || 50)) / 100;
+  const seq = simOrder.map((o, i) => [o[0], o[1], simActions[i] || '', simRoles[i] || '']);
+  const patch = document.getElementById('sim-patch').value;
+  const d = await getJSON(`/api/draft/simulate?pre=${pre}&patch=${encodeURIComponent(patch)}&seq=${encodeURIComponent(JSON.stringify(seq))}`);
+  // steps are numbered by sequence index; blanks are skipped server-side, so
+  // re-key by the original position to line up with the table
+  let k = 0; const mapped = [];
+  simOrder.forEach((o, i) => { if (simActions[i]) { const s = d.steps[k++]; if (s) { s.step = i + 1; mapped.push(s); } } });
+  d.steps = mapped;
+  simRender(d);
+}
+function simReset(){ simActions = simOrder.map(() => ''); simRoles = simOrder.map(() => ''); simRender(); }
+document.getElementById('sim-pre').addEventListener('change', simRun);
+simInit().catch(e => { document.getElementById('sim-meta').textContent = 'simulator unavailable: ' + e; });
+
+function clearChart(){
+  if (chart){ chart.data.datasets = []; chart.update(); }
+  colorIdx = 0; outageSpans = []; gameStart = null;
+  document.getElementById('outages').innerHTML = '';
+}
+
+const pp = v => (v > 0 ? '+' : '') + (v * 100).toFixed(1);
+const _dt = {};  // per-table state: rows, cols, default top/bottom view, sort
+function draftTable(id, rows, cols, topBottom){
+  _dt[id] = {rows, cols, topBottom, sortKey: null, sortDir: 'desc'};
+  renderDT(id);
+}
+function renderDT(id){
+  const st = _dt[id];
+  const box = document.getElementById(id);
+  box.innerHTML = '';
+  if (!st.rows.length){ box.innerHTML = '<p class="muted">no rows (lower min games?)</p>'; return; }
+  let shown, note = '';
+  if (st.sortKey){
+    const col = st.cols.find(c => c.key === st.sortKey);
+    const rows = st.rows.slice().sort((a, b) => {
+      let x = a[st.sortKey], y = b[st.sortKey];
+      if (col.num){ x = parseFloat(x); y = parseFloat(y); return st.sortDir === 'desc' ? y - x : x - y; }
+      x = String(x); y = String(y);
+      return st.sortDir === 'desc' ? y.localeCompare(x) : x.localeCompare(y);
+    });
+    shown = rows.slice(0, 40);
+    if (rows.length > 40) note = `showing 40 of ${rows.length} — sorted by ${col.h} (${st.sortDir})`;
+  } else if (st.topBottom && st.rows.length > 2 * st.topBottom) {
+    shown = st.rows.slice(0, st.topBottom).concat([null]).concat(st.rows.slice(-st.topBottom));
+    note = `top ${st.topBottom} and bottom ${st.topBottom} of ${st.rows.length} by Δ draft — click a header to sort`;
+  } else shown = st.rows;
+  const table = el('table');
+  const hdr = el('tr');
+  st.cols.forEach(c => {
+    const active = st.sortKey === c.key;
+    const th = el('th', {style: 'cursor:pointer;white-space:nowrap', title: 'sort'},
+      c.h + (active ? (st.sortDir === 'desc' ? ' ▼' : ' ▲') : ' ⇅'));
+    if (!active) th.style.color = '#666';
+    th.addEventListener('click', () => {
+      if (st.sortKey === c.key) st.sortDir = st.sortDir === 'desc' ? 'asc' : 'desc';
+      else { st.sortKey = c.key; st.sortDir = 'desc'; }
+      renderDT(id);
+    });
+    hdr.appendChild(th);
+  });
+  table.appendChild(hdr);
+  for (const r of shown){
+    const tr = el('tr');
+    if (r === null){
+      tr.appendChild(el('td', {class: 'muted', colspan: String(st.cols.length)}, '⋯'));
+    } else {
+      st.cols.forEach(c => {
+        const v = c.f(r);
+        const td = el('td', {}, v);
+        if (c.color){
+          const x = parseFloat(v);
+          if (x > 0) td.style.color = '#0a7a44';
+          if (x < 0) td.style.color = '#c22';
+        }
+        tr.appendChild(td);
+      });
+    }
+    table.appendChild(tr);
+  }
+  box.appendChild(table);
+  if (note) box.appendChild(el('p', {class: 'muted'}, note));
+}
+
+async function draftAnalysis(){
+  const stats = document.getElementById('dr-stats');
+  stats.textContent = 'computing…';
+  const q = `platform=${document.getElementById('dr-plat').value}` +
+            `&league=${encodeURIComponent(document.getElementById('dr-league').value.trim())}` +
+            `&min_n=${document.getElementById('dr-minn').value}`;
+  try {
+    const [teams, champs, pairs] = await Promise.all([
+      getJSON('/api/draft/teams?' + q),
+      getJSON('/api/draft/champions?' + q),
+      getJSON('/api/draft/pairs?' + q),
+    ]);
+    draftTable('dr-teams', teams, [
+      {h: 'team', key: 'team', f: r => r.team},
+      {h: 'games', key: 'n', num: true, f: r => r.n},
+      {h: 'Δ draft (pp)', key: 'avg_delta', num: true, f: r => pp(r.avg_delta), color: true},
+      {h: 'pre', key: 'avg_pre', num: true, f: r => (r.avg_pre*100).toFixed(0) + '%'},
+      {h: 'post', key: 'avg_post', num: true, f: r => (r.avg_post*100).toFixed(0) + '%'},
+      {h: 'won', key: 'win_rate', num: true, f: r => (r.win_rate*100).toFixed(0) + '%'},
+      {h: 'post-edge (pp)', key: 'post_edge', num: true, f: r => pp(r.post_edge), color: true},
+    ]);
+    draftTable('dr-champs', champs, [
+      {h: 'champion', key: 'champion', f: r => r.champion},
+      {h: 'picks', key: 'n', num: true, f: r => r.n},
+      {h: 'Δ draft (pp)', key: 'avg_delta', num: true, f: r => pp(r.avg_delta), color: true},
+      {h: 'won', key: 'win_rate', num: true, f: r => (r.win_rate*100).toFixed(0) + '%'},
+    ], 12);
+    pairs.forEach(r => r.pair = r.c1 + ' + ' + r.c2);
+    draftTable('dr-pairs', pairs, [
+      {h: 'pair', key: 'pair', f: r => r.pair},
+      {h: 'games', key: 'n', num: true, f: r => r.n},
+      {h: 'Δ draft (pp)', key: 'avg_delta', num: true, f: r => pp(r.avg_delta), color: true},
+      {h: 'won', key: 'win_rate', num: true, f: r => (r.win_rate*100).toFixed(0) + '%'},
+    ], 10);
+    stats.textContent = `${teams.length} teams · ${champs.length} champions · ${pairs.length} pairs above threshold`;
+  } catch (e) { stats.textContent = 'failed: ' + e; }
+}
+
+let calChart = null;
+async function calibrate(){
+  const stats = document.getElementById('cal-stats');
+  stats.textContent = 'computing… (first run over the full history takes a moment)';
+  const h = document.getElementById('cal-horizon').value;
+  const f = document.getElementById('cal-filter').value.trim();
+  const nb = document.getElementById('cal-bins').value;
+  let d;
+  try {
+    d = await getJSON(`/api/calibration?horizon=${h}&filter=${encodeURIComponent(f)}&bins=${nb}`);
+  } catch (e) { stats.textContent = 'failed: ' + e; return; }
+  const fine = d.bins > 25;  // many thin bins: smaller dots, no connecting line
+  const mk = (plat, color) => {
+    const bins = d[plat].bins.filter(b => b.n > 0);
+    return {
+      label: `${plat} (N=${d[plat].n}, Brier=${d[plat].brier ?? '—'})`,
+      borderColor: color, backgroundColor: color, showLine: !fine, tension: 0,
+      pointRadius: bins.map(b => Math.max(fine ? 2 : 3, Math.min(10, Math.sqrt(b.n)/3))),
+      data: bins.map(b => ({x: b.mean_pred, y: b.obs_freq, n: b.n})),
+    };
+  };
+  const diag = {label: 'perfect', borderColor: '#bbb', borderDash: [6,4],
+                pointRadius: 0, data: [{x:0,y:0},{x:1,y:1}], showLine: true};
+  const ds = [diag];
+  if (d.polymarket.n) ds.push(mk('polymarket', '#1652f0'));
+  if (d.kalshi.n) ds.push(mk('kalshi', '#0aa574'));
+  if (calChart) calChart.destroy();
+  calChart = new Chart(document.getElementById('calchart'), {
+    type: 'scatter', data: {datasets: ds},
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: {min: 0, max: 1, title: {display: true, text: 'predicted probability (market odds)'}},
+        y: {min: 0, max: 1, title: {display: true, text: 'observed frequency (resolved YES)'}}
+      },
+      plugins: {
+        legend: {position: 'bottom'},
+        tooltip: {callbacks: {label: c =>
+          `pred ${c.parsed.x} → observed ${c.parsed.y}` +
+          (c.raw.n != null ? ` (n=${c.raw.n})` : '')}}
+      }
+    }
+  });
+  stats.textContent =
+    `polymarket: N=${d.polymarket.n}, Brier=${d.polymarket.brier ?? '—'} · ` +
+    `kalshi: N=${d.kalshi.n}, Brier=${d.kalshi.brier ?? '—'} · ` +
+    `(lower Brier is better; 0.25 = coin flip on 50/50 odds)`;
+}
+</script>
+</body>
+</html>

@@ -109,22 +109,27 @@ def connect(dsn=None):
     # DDL runs in autocommit so a failed optional statement can't poison a
     # shared transaction; the connection is handed to the app transactional.
     conn = psycopg.connect(dsn or config.PG_DSN, row_factory=dict_row, autocommit=True)
-    conn.execute("CREATE EXTENSION IF NOT EXISTS timescaledb")
-    conn.execute(SCHEMA)
-    for table in HYPERTABLES:
-        conn.execute(
-            "SELECT create_hypertable(%s, 'ts', if_not_exists => TRUE, "
-            "migrate_data => TRUE)", (table,))
-    # compress book snapshots older than 30 days (they dominate volume)
-    try:
-        conn.execute("""
-            ALTER TABLE book_snapshots SET (timescaledb.compress,
-                timescaledb.compress_segmentby = 'platform, market_id')""")
-        conn.execute("""
-            SELECT add_compression_policy('book_snapshots', INTERVAL '30 days',
-                                          if_not_exists => TRUE)""")
-    except psycopg.Error:
-        pass  # compression unavailable on this build; fine
+    # only bootstrap when the schema is missing: even no-op IF NOT EXISTS DDL
+    # takes table locks, which can deadlock against concurrent writers
+    row = conn.execute(
+        "SELECT to_regclass('public.markets') IS NOT NULL AS present").fetchone()
+    if not row["present"]:
+        conn.execute("CREATE EXTENSION IF NOT EXISTS timescaledb")
+        conn.execute(SCHEMA)
+        for table in HYPERTABLES:
+            conn.execute(
+                "SELECT create_hypertable(%s, 'ts', if_not_exists => TRUE, "
+                "migrate_data => TRUE)", (table,))
+        # compress book snapshots older than 30 days (they dominate volume)
+        try:
+            conn.execute("""
+                ALTER TABLE book_snapshots SET (timescaledb.compress,
+                    timescaledb.compress_segmentby = 'platform, market_id')""")
+            conn.execute("""
+                SELECT add_compression_policy('book_snapshots', INTERVAL '30 days',
+                                              if_not_exists => TRUE)""")
+        except psycopg.Error:
+            pass  # compression unavailable on this build; fine
     conn.autocommit = False
     return conn
 

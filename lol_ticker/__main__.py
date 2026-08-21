@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 
@@ -36,6 +37,19 @@ def main():
     e.add_argument("terms", nargs="+", help="team / date terms or an exact event id")
     e.add_argument("--out", default="exports", help="output directory")
 
+    w = sub.add_parser("dashboard", help="serve the local web dashboard")
+    w.add_argument("--port", type=int,
+                   default=int(os.environ.get("PORT", "8090")),
+                   help="default: $PORT or 8090")
+
+    dr = sub.add_parser("draftload",
+                        help="load Oracle's Elixir CSVs and build draft deltas")
+    dr.add_argument("csvs", nargs="*", default=[],
+                    help="OE csv paths (default: data/oe/oe_*.csv)")
+    dr.add_argument("--skip-deltas", action="store_true",
+                    help="reload CSVs and refit the model without re-matching markets")
+    sub.add_parser("draftfit", help="(re)fit the draft simulator model only")
+
     args = p.parse_args()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -66,6 +80,27 @@ def main():
         print("\nwatchlist: %d fast-tier (near game time), %d slow-tier" % (len(fast), len(slow)))
         for m in fast[:20]:
             print("  FAST %s %s" % (m["platform"], m["market_id"]))
+    elif args.cmd == "dashboard":
+        from . import dashboard
+        try:
+            dashboard.serve(port=args.port)
+        except KeyboardInterrupt:
+            print("\nstopped")
+    elif args.cmd == "draftload":
+        import glob
+        from . import draft
+        paths = args.csvs or sorted(glob.glob(
+            os.path.join(config.REPO_ROOT, "data", "oe", "oe_*.csv")))
+        if not paths:
+            print("no OE csvs found; pass paths or put them in data/oe/")
+            return 1
+        draft.load_oe(conn, paths)
+        if not args.skip_deltas:
+            draft.build_deltas(conn)
+        draft.fit_model(conn)
+    elif args.cmd == "draftfit":
+        from . import draft
+        draft.fit_model(conn)
     elif args.cmd == "game":
         _print_games(query.find_games(conn, args.terms))
     elif args.cmd == "export":

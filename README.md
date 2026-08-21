@@ -53,7 +53,76 @@ Then, at any time:
 python3 -m lol_ticker status                     # what's stored, what's being watched
 python3 -m lol_ticker game LNG 2026-08-09        # find games by team / date terms
 python3 -m lol_ticker export LNG 2026-08-09      # dump a game's full record to CSVs
+python3 -m lol_ticker dashboard                  # local web UI at 127.0.0.1:8090
 ```
+
+## Dashboard
+
+`python3 -m lol_ticker dashboard` serves a single-page UI (localhost only).
+Search by team/date, click a game, tick markets to chart their odds over time
+— Kalshi and Polymarket series can be overlaid on the same chart (solid line =
+price history, dashed = recorded L2 midpoint where available). The header pill
+shows live Kalshi trading status (red when the exchange is paused, refreshed
+every 60 s); exchange outages that overlap a game's window are shaded red on
+the chart and listed above it, and the green dashed vertical line marks
+scheduled game start.
+
+The **Calibration** section below the chart evaluates each platform against
+reality: every settled market contributes its last traded price before a
+chosen cutoff (at game start / 1h / 6h / 24h before) and its resolution, and
+the reliability diagram plots predicted probability vs. observed YES frequency
+per decile (point size ∝ sample count) with Brier scores per platform. An
+optional title filter restricts the sample (e.g. `match`, `map 1`, `LCK`).
+Results are computed server-side (`/api/calibration`) and cached 10 minutes.
+
+Two selection artifacts are corrected by construction: Polymarket samples only
+conditions where **both** outcome tokens priced before the cutoff (one-sided
+samples are winner-biased — losing tokens often stop trading, so their price
+series is missing), and Kalshi samples bid/ask midpoints (trade-less candles
+close at the bid, which fabricates longshot bias at low prices).
+
+## Draft analysis
+
+The **Draft analysis** section measures how the market re-rates each team after
+champion select. Setup: download Oracle's Elixir yearly match CSVs into
+`data/oe/oe_<year>.csv` (Google Drive folder linked from
+oracleselixir.com/tools/downloads), then run:
+
+```bash
+python3 -m lol_ticker draftload
+```
+
+This loads per-game teams/picks/winners with actual game-start times, matches
+every per-map winner market to its game (team name + map number + start-time
+proximity; ~90% match rate), samples each team's win odds 16 min before game
+start (pre-draft) and 2 min after (post-draft), and stores the deltas.  The
+dashboard then ranks teams by average draft re-rating, champions by the mean
+delta of teams that picked them, and same-team champion pairs
+(synergies/anti-synergies), with league / platform / min-sample filters.
+Games covered by both platforms count once (averaged). Rerun `draftload`
+after downloading fresher CSVs to pick up new games (`--skip-deltas` reloads
+CSVs and refits the model without re-matching markets; `draftfit` refits only).
+
+### Draft simulator
+
+The **Draft simulator** section walks the competitive draft order (3+3 bans,
+6 picks, 2+2 bans, 4 picks). Each action's effect on blue's win probability
+comes from a ridge regression (`draft_model` table) of the log-odds draft
+re-rating on draft-state indicators, built hierarchically: a base effect per
+champion (own/enemy pick, own/enemy ban), plus **role deviations**
+(`own_pick:Ashe@sup`) and **patch deviations** (`own_pick:Ashe#16.15`), plus
+same-team synergy pairs and cross-team matchups. Interaction features need
+≥25 games; the UI has a patch selector and per-pick role selects, and blanks
+fall back to the base effect.
+
+It is heavily regularized (λ=1000) because champion identity explains little
+of the market's post-draft move: held-out R² is ~0.03 on a random split and
+~0.02 on a time-ordered split (train on earlier patches, predict the newest
+two) — both shown in the UI. Role and patch features help slightly within an
+era and not at all across patches. Treat per-action estimates (typically
+±0.2–1 pp) as directional context, not predictions; the market's draft
+re-rating is mostly about the specific teams, meta and execution, which
+champion-level features do not capture.
 
 `game`/`export` terms match team names, event ids, or market titles; a
 `YYYY-MM-DD` term filters by game day (UTC). Export writes one directory per
@@ -124,8 +193,8 @@ Example — 1-minute best bid/ask for one market with `time_bucket`:
 
 ```sql
 SELECT time_bucket('1 minute', ts) AS minute,
-       last((bids->0->0)::float, ts) AS best_bid,
-       last((asks->0->0)::float, ts) AS best_ask
+       last((bids->0->>0)::float, ts) AS best_bid,
+       last((asks->0->>0)::float, ts) AS best_ask
 FROM book_snapshots
 WHERE platform='kalshi' AND market_id='KXLOLGAME-26AUG090300LNGIG-LNG'
 GROUP BY minute ORDER BY minute;
