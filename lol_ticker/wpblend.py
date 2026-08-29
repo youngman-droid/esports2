@@ -30,12 +30,9 @@ def _logit(p):
 
 
 def _predict_rows(d, model, mask):
-    pre = model["pregame"]
-    pre_raw = wpgam.pregame_values_from_matrix(d["X"][mask], list(d["names"]))
-    _, team, champ = wpgam.predict_pregame(pre, pre_raw, d["C"][mask])
     raw = np.column_stack([
-        pre["intercept"] + team,
-        champ,
+        wpgam.prior_values_from_matrix(model, d["X"][mask], list(d["names"]),
+                                       d["C"][mask]),
         wpgam.state_values_from_matrix(d["X"][mask], list(d["names"])),
     ])
     return wpgam.predict_state(model["state"], raw, d["t"][mask] / 60.0)
