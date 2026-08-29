@@ -291,7 +291,23 @@ Two outcome-based models evaluate drafts and events without any market data
   cap15)` from the exploration zoo (full feature set plus champion×time
   terms), still beats the deployed GAM on this same holdout: fixed-minute
   state Brier 0.15312 vs 0.15448 and game Brier 0.14219 vs 0.14341, winning
-  every phase and event slice (rerun 2026-08-29). The GAM stays deployed as a
+  every phase and event slice on point estimates (rerun 2026-08-29; the
+  paired game-block delta is −0.00122 with 95% interval −0.00262..+0.00028,
+  so the gap is suggestive rather than confirmed on this block). The edge
+  survives fairness controls — trained on the GAM's own fixed-minute rows
+  with its game-balanced loss it still scores 0.14250, and hyperparameter
+  neighbors (l2=200/cap25, l2=100/cap20) all land at ~0.14256 — and its
+  feature set is leak-free (no draft term; RAPM/Elo/form are time-forward by
+  construction). Attribution is clean: champscale *without* its champion
+  columns (plain `logit_xt`) scores 0.14443, worse than the GAM, so the
+  entire edge is the champion×time terms (−0.0022 on their own), while
+  grafting cheap interaction terms (Baron×deaths, lead×inhib) onto the GAM
+  contract moves nothing (0.14340). Separately, an edge-case mispricing:
+  in "Baron + ≥3 more enemies dead while 3–7k behind" states (22–35 min)
+  the advantaged side historically wins 71% (n=245 states / 86 games), the
+  legacy model says ~79%, the GAM ~49% — too rare (245 of 1.76M states) to
+  affect aggregate scores, but live it will read a won fight at Baron while
+  behind too pessimistically. The GAM stays deployed as a
   deliberate trade: shape constraints bound live misbehavior, its contract is
   provably identical between the historical fit and the live feed, and the
   shadow protocol declares it — the ~0.0011–0.0014 game-Brier gap is the
