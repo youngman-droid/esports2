@@ -344,6 +344,11 @@ def market_prices(conn, teams, game_num, deciding=False):
     return quote_markets(r, teams)
 
 
+# Prior keys forwarded from team_priors into live model states; every caller
+# that filters priors for the model must use this tuple.
+PRIOR_KEYS = ("elo_oe", "pelo_oe", "form_diff", "elo_gg")
+
+
 def team_priors(conn, teams):
     """Current post-game Elo priors for [blue, red]; blue minus red.
 
@@ -351,6 +356,11 @@ def team_priors(conn, teams):
     the newest row verbatim therefore leaves every team one result stale.  We
     advance that row by its known outcome here and keep only a short-lived
     cache so a long-running dashboard sees newly completed games.
+
+    ``elo_gg`` comes the same way from gol.gg games (``golgg_games`` pre-game
+    Elo maintained by ``wpa``, K=30) and covers teams even while the Oracle's
+    Elixir CSV is stale; OE fields fall back to 0 (= even) when only gol.gg
+    knows the teams.
     """
     from .draft import norm_team
     now = time.time()
@@ -362,7 +372,14 @@ def team_priors(conn, teams):
                                WHERE g.date_utc > extract(epoch from now()) - 120*86400
                                  AND g.winner IS NOT NULL
                                ORDER BY g.date_utc DESC, g.game_id DESC""").fetchall()
-        cached = {"at": now, "rows": rows}
+        gg_rows = conn.execute("""SELECT blue_team, red_team, winner_side,
+                                         elo_blue_pre, elo_red_pre
+                                  FROM golgg_games
+                                  WHERE date > now() - interval '120 days'
+                                    AND winner_side IS NOT NULL
+                                    AND elo_blue_pre IS NOT NULL
+                                  ORDER BY date DESC, match_id DESC, game_num DESC""").fetchall()
+        cached = {"at": now, "rows": rows, "gg_rows": gg_rows}
         team_priors._cache = cached
     rows = cached["rows"]
     vals = {}
@@ -388,13 +405,34 @@ def team_priors(conn, teams):
                             pelo + 24.0 * (won - exp_player), 0.5]
         if nt in vals and recent:
             vals[nt][2] = sum(recent) / len(recent)
+    gg_vals = {}
+    for name in teams:
+        nt = norm_team(name)
+        for row in cached.get("gg_rows", []):
+            blue = norm_team(row["blue_team"]) == nt
+            if not blue and norm_team(row["red_team"]) != nt:
+                continue
+            elo = float(row["elo_blue_pre"] if blue else row["elo_red_pre"])
+            opp = float(row["elo_red_pre"] if blue else row["elo_blue_pre"])
+            won = 1.0 if row["winner_side"] == ("blue" if blue else "red") else 0.0
+            exp = 1.0 / (1.0 + 10 ** ((opp - elo) / 400.0))
+            gg_vals[nt] = elo + 30.0 * (won - exp)
+            break
     nb, nr = norm_team(teams[0]), norm_team(teams[1])
-    if nb in vals and nr in vals:
+    oe_found = nb in vals and nr in vals
+    gg_found = nb in gg_vals and nr in gg_vals
+    if not oe_found and not gg_found:
+        return {"found": False}
+    out = {"found": True, "oe_found": oe_found, "gg_found": gg_found,
+           "elo_oe": 0.0, "pelo_oe": 0.0, "form_diff": 0.0, "elo_gg": None}
+    if oe_found:
         b, r_ = vals[nb], vals[nr]
-        return {"elo_oe": (b[0] - r_[0]) / 400.0, "pelo_oe": (b[1] - r_[1]) / 400.0,
-                "form_diff": b[2] - r_[2], "found": True,
-                "elo_blue": b[0], "elo_red": r_[0]}
-    return {"found": False}
+        out.update({"elo_oe": (b[0] - r_[0]) / 400.0, "pelo_oe": (b[1] - r_[1]) / 400.0,
+                    "form_diff": b[2] - r_[2], "elo_blue": b[0], "elo_red": r_[0]})
+    if gg_found:
+        out.update({"elo_gg": (gg_vals[nb] - gg_vals[nr]) / 400.0,
+                    "gg_elo_blue": gg_vals[nb], "gg_elo_red": gg_vals[nr]})
+    return out
 
 
 # -------------------------------------------------------- 1 Hz frame series

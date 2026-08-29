@@ -36,6 +36,7 @@ class FeatureContractTests(unittest.TestCase):
             "items_done_diff": 2, "item_gold_diff_k": 1.2,
             "hp_pool": 0.9, "lvl_k": 0.6, "has_hp": 1,
             "elo_oe": 0.25, "pelo_oe": 0.1, "form_diff": 0.2,
+            "elo_gg": 0.3, "t_since_kill_min": 3.5,
         }
         old = wpx.live_vector(state, list(wpx.FEATURE_NAMES))[None, :]
         hist = wpgam.state_values_from_matrix(old, list(wpx.FEATURE_NAMES))[0]
@@ -48,25 +49,34 @@ class FeatureContractTests(unittest.TestCase):
         self.assertEqual(by_name["dead_adv_sq"], 4.0)
         self.assertEqual(by_name["dead_count_sq_adv"], 8.0)
         self.assertEqual(by_name["dead_base_pressure"], 12.0)
+        self.assertAlmostEqual(by_name["gold_rel"], 1.5 / 62.5)
+        self.assertEqual(by_name["t_since_kill"], 3.5)
         np.testing.assert_allclose(
             wpgam.pregame_values_from_matrix(old, list(wpx.FEATURE_NAMES))[0],
             wpgam.pregame_values_from_live(state),
         )
 
+    def test_missing_golgg_elo_falls_back_to_oe_elo(self):
+        pre = wpgam.pregame_values_from_live({"elo_oe": 0.25, "elo_gg": None})
+        by_name = dict(zip(wpgam.PREGAME_FEATURES, pre))
+        self.assertEqual(by_name["elo_gg"], 0.25)
+
 
 class ArtifactTests(unittest.TestCase):
     def _model(self):
-        nchamp = 1
+        npre = len(wpgam.PREGAME_FEATURES)
         nf = 2 + len(wpgam.STATE_FEATURES)
         theta = np.zeros((nf + 1, len(wpgam.TIME_KNOTS)))
         theta[1, :] = 1.0  # pregame team logit
         theta[2, :] = 1.0  # pregame champion logit
         theta[3, :] = 1.0  # gold advantage
+        team_beta = np.zeros(npre)
+        team_beta[0] = 1.0
         return {
             "pregame": {
-                "mean": np.zeros(3), "std": np.ones(3),
-                "lo": np.full(3, -10.0), "hi": np.full(3, 10.0),
-                "intercept": 0.0, "team_beta": np.array([1.0, 0.0, 0.0]),
+                "mean": np.zeros(npre), "std": np.ones(npre),
+                "lo": np.full(npre, -10.0), "hi": np.full(npre, 10.0),
+                "intercept": 0.0, "team_beta": team_beta,
                 "champ_beta": np.array([0.2]), "champ_names": np.array(["Ahri"]),
             },
             "state": {

@@ -5,16 +5,30 @@ from lol_ticker import draft, live
 
 
 class _Conn:
-    def __init__(self, rows):
-        self.rows = rows
+    """Serves the OE-ratings query first, then the gol.gg query."""
+
+    def __init__(self, oe_rows, gg_rows=()):
+        self.row_sets = [list(oe_rows), list(gg_rows)]
         self.calls = 0
 
     def execute(self, _query):
         self.calls += 1
+        self._pending = self.row_sets[min(self.calls - 1, 1) % 2]
         return self
 
     def fetchall(self):
-        return self.rows
+        return self._pending
+
+
+_OE_ROW = {
+    "blue_team": "Alpha", "red_team": "Beta", "winner": "Alpha",
+    "date_utc": 1, "elo_blue": 1500.0, "elo_red": 1500.0,
+    "pelo_blue": 1500.0, "pelo_red": 1500.0,
+}
+_GG_ROW = {
+    "blue_team": "Alpha", "red_team": "Beta", "winner_side": "blue",
+    "elo_blue_pre": 1500.0, "elo_red_pre": 1500.0,
+}
 
 
 class TeamPriorTests(unittest.TestCase):
@@ -23,12 +37,7 @@ class TeamPriorTests(unittest.TestCase):
             del live.team_priors._cache
 
     def test_latest_pregame_rating_is_advanced_by_known_result(self):
-        rows = [{
-            "blue_team": "Alpha", "red_team": "Beta", "winner": "Alpha",
-            "date_utc": 1, "elo_blue": 1500.0, "elo_red": 1500.0,
-            "pelo_blue": 1500.0, "pelo_red": 1500.0,
-        }]
-        conn = _Conn(rows)
+        conn = _Conn([_OE_ROW], [_GG_ROW])
         out = live.team_priors(conn, ["Alpha", "Beta"])
         self.assertTrue(out["found"])
         self.assertAlmostEqual(out["elo_blue"], 1515.0)
@@ -36,17 +45,22 @@ class TeamPriorTests(unittest.TestCase):
         self.assertAlmostEqual(out["elo_oe"], 30.0 / 400.0)
         self.assertAlmostEqual(out["pelo_oe"], 24.0 / 400.0)
         self.assertEqual(out["form_diff"], 1.0)
+        self.assertAlmostEqual(out["elo_gg"], 30.0 / 400.0)
+
+    def test_golgg_elo_carries_priors_while_oe_source_is_stale(self):
+        conn = _Conn([], [_GG_ROW])
+        out = live.team_priors(conn, ["Alpha", "Beta"])
+        self.assertTrue(out["found"])
+        self.assertFalse(out["oe_found"])
+        self.assertEqual(out["elo_oe"], 0.0)
+        self.assertEqual(out["form_diff"], 0.0)
+        self.assertAlmostEqual(out["elo_gg"], 30.0 / 400.0)
 
     def test_cache_has_a_bounded_lifetime_shape(self):
-        rows = [{
-            "blue_team": "Alpha", "red_team": "Beta", "winner": "Alpha",
-            "date_utc": 1, "elo_blue": 1500.0, "elo_red": 1500.0,
-            "pelo_blue": 1500.0, "pelo_red": 1500.0,
-        }]
-        conn = _Conn(rows)
+        conn = _Conn([_OE_ROW], [_GG_ROW])
         live.team_priors(conn, ["Alpha", "Beta"])
         live.team_priors(conn, ["Alpha", "Beta"])
-        self.assertEqual(conn.calls, 1)
+        self.assertEqual(conn.calls, 2)
         self.assertIn("at", live.team_priors._cache)
 
 

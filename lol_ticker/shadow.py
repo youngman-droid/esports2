@@ -19,7 +19,7 @@ from . import config, wpbench, wpgam, wphist
 
 log = logging.getLogger("shadow")
 RESULT_PATH = os.path.join(wpgam.OUT_DIR, "shadow_score.json")
-PROTOCOL_VERSION = "shadow_v5_active_objectives"
+PROTOCOL_VERSION = "shadow_v6_gg_prior_tempo"
 DEFAULT_INTERVAL_S = 15
 CONFIRMATORY_GAMES = 100
 _SCHEMA_READY = False
@@ -119,7 +119,7 @@ def _protocol_config():
         "historical_backfill": False,
         "sampling_unit": "first captured live frame per integer game minute",
         "sampling_cadence_s": DEFAULT_INTERVAL_S,
-        "forecast_inputs": "team ratings, draft, window-health deaths, stateful Baron/Elder timers, and game state only; no quote from the current match",
+        "forecast_inputs": "team ratings (OE and gol.gg Elo), draft, window-health deaths, stateful Baron/Elder timers, gold share, kill recency, and game state only; no quote from the current match",
         "historical_odds": "offline teacher input only; chronological holdout gate required for deployment",
         "market_price": "blue-oriented midpoint captured only as a comparison benchmark",
         "valid_market": "non-stale and non-settled quote",
@@ -276,14 +276,14 @@ def _record_game(conn, protocol, game, versions):
     priors = live.team_priors(conn, game["teams"])
     estimate = live.estimate_series(
         conn, game["game_id"],
-        {k: v for k, v in priors.items() if k in ("elo_oe", "pelo_oe", "form_diff")},
+        {k: v for k, v in priors.items() if k in live.PRIOR_KEYS},
         since_ts=0)
     oriented = _orient_game(game, estimate)
     if oriented["teams"] != game["teams"]:
         priors = live.team_priors(conn, oriented["teams"])
         estimate = live.estimate_series(
             conn, oriented["game_id"],
-            {k: v for k, v in priors.items() if k in ("elo_oe", "pelo_oe", "form_diff")},
+            {k: v for k, v in priors.items() if k in live.PRIOR_KEYS},
             since_ts=0)
     frames = estimate.get("frames") or []
     if not frames or not estimate.get("game_start_ts"):

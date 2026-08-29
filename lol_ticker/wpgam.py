@@ -12,6 +12,10 @@ The model has two stages:
 Only fixed-minute states are used for the in-game fit.  This makes the fitting
 distribution match continuous live scoring and avoids giving event-heavy games
 hundreds of extra, highly correlated rows.
+
+v6 additions (each live-derivable from existing feed fields): a gol.gg-based
+team Elo in the pregame stage (OE ratings go stale when the source CSV lags),
+relative gold share, and time since the last kill.
 """
 import json
 import logging
@@ -24,14 +28,16 @@ from . import config
 
 
 log = logging.getLogger("wpgam")
-MODEL_KIND = "wpgam_v5_active_objectives"
+MODEL_KIND = "wpgam_v6_gg_prior_tempo"
 OUT_DIR = os.path.join(config.REPO_ROOT, "data", "wpx")
 MODEL_PATH = os.path.join(OUT_DIR, "model_live_gam.npz")
 
 TIME_KNOTS = np.array([0.0, 10.0, 20.0, 30.0, 45.0], dtype=np.float64)
 STATE_L2 = 24.0
 STATE_SMOOTH = 70.0
-PREGAME_FEATURES = ["elo_oe", "pelo_oe", "form_diff"]
+# elo_gg (gol.gg-based team Elo) backs up the Oracle's Elixir ratings, whose
+# source CSV can go stale for weeks; gol.gg coverage is ~99.8% of games.
+PREGAME_FEATURES = ["elo_oe", "pelo_oe", "form_diff", "elo_gg"]
 
 # Every feature here can be constructed identically from a historical WPX row
 # and an official-feed live state.  Differences are oriented toward blue.
@@ -42,6 +48,7 @@ STATE_FEATURES = [
     "d_inhib", "d_elder", "elder_active", "soul",
     "dead_adv", "dead_adv_sq", "dead_count_sq_adv", "dead_base_pressure",
     "hp_pool", "lvl_k", "has_hp",
+    "gold_rel", "t_since_kill",
 ]
 
 # A non-negative coefficient at each time knot makes the partial derivative of
@@ -51,7 +58,7 @@ MONOTONE_FEATURES = {
     "d_dragon", "d_baron", "baron_active", "d_inhib", "d_elder",
     "elder_active", "soul", "dead_adv",
     "dead_adv_sq", "dead_count_sq_adv", "dead_base_pressure",
-    "hp_pool", "lvl_k",
+    "hp_pool", "lvl_k", "gold_rel",
 }
 
 
@@ -140,6 +147,8 @@ def state_values_from_matrix(X, names):
         dead_base_pressure,
         _column(X, idx, "hp_pool"),
         _column(X, idx, "lvl_k"), _column(X, idx, "has_hp"),
+        _column(X, idx, "gold_rel"),
+        _column(X, idx, "t_since_kill", default=10.0),
     ])
     if vals.shape[1] != len(STATE_FEATURES):
         raise AssertionError("state feature contract is out of sync")
@@ -150,6 +159,8 @@ def state_values_from_live(state):
     """Same production feature contract from an official-feed state dict."""
     s = dict(state)
     gk = float(s.get("gold_diff_k", 0.0) or 0.0)
+    total_gold_k = (float(s.get("gold_blue", 0) or 0)
+                    + float(s.get("gold_red", 0) or 0)) / 1000.0
     role = list(s.get("gold_role") or [gk / 5.0] * 5)
     role = (role + [gk / 5.0] * 5)[:5]
     drag_b = int(s.get("drag_blue", 0) or 0)
@@ -179,6 +190,8 @@ def state_values_from_live(state):
         float(s.get("hp_pool", 0.0) or 0.0),
         float(s.get("lvl_k", 0.0) or 0.0),
         float(s.get("has_hp", 0.0) or 0.0),
+        gk / total_gold_k if total_gold_k > 1.0 else 0.0,
+        float(s.get("t_since_kill_min", 10.0)),
     ]
     return np.asarray(vals, dtype=np.float64)
 
@@ -190,6 +203,10 @@ def pregame_values_from_matrix(X, names):
 
 def pregame_values_from_live(state):
     s = dict(state)
+    # Same fallback as wpx.live_vector: a missed gol.gg lookup borrows the OE
+    # Elo (near-identical scale) rather than reading as "even teams".
+    if s.get("elo_gg") is None:
+        s["elo_gg"] = s.get("elo_oe", 0.0)
     return np.asarray([float(s.get(n, 0.0) or 0.0) for n in PREGAME_FEATURES], dtype=np.float64)
 
 

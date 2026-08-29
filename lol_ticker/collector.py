@@ -351,7 +351,7 @@ def _check_kalshi_status(conn, fast_markets):
                        json.dumps(raw, separators=(",", ":")))
     elif active and ongoing is not None:
         log.info("kalshi trading resumed after %ds halt", t - ongoing)
-        db.close_outage(conn, "kalshi", t)
+        db.close_outage(conn, "kalshi", "halt", t)
     if not active:
         # any market being recorded near game time during the halt is affected
         for m in fast_markets:

@@ -11,12 +11,15 @@ from lol_ticker import wpgam, wphist
 class HistoricalOddsTests(unittest.TestCase):
     @staticmethod
     def _base_model():
+        npre = len(wpgam.PREGAME_FEATURES)
         nf = 2 + len(wpgam.STATE_FEATURES)
+        team_beta = np.zeros(npre)
+        team_beta[0] = 1.0
         return {
             "pregame": {
-                "mean": np.zeros(3), "std": np.ones(3),
-                "lo": np.full(3, -10.0), "hi": np.full(3, 10.0),
-                "intercept": 0.0, "team_beta": np.array([1.0, 0.0, 0.0]),
+                "mean": np.zeros(npre), "std": np.ones(npre),
+                "lo": np.full(npre, -10.0), "hi": np.full(npre, 10.0),
+                "intercept": 0.0, "team_beta": team_beta,
                 "champ_beta": np.zeros(0), "champ_names": np.array([], dtype=str),
             },
             "state": {

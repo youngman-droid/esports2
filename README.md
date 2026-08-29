@@ -87,7 +87,10 @@ the same. Or search by team/date, click a game, tick markets to chart their odds
 — Kalshi and Polymarket series can be overlaid on the same chart (solid line =
 price history, dashed = recorded L2 midpoint where available). The header pill
 shows live Kalshi trading status (red when the exchange is paused, refreshed
-every 60 s); exchange outages that overlap a game's window are shaded red on
+every 60 s), and a second pill appears only when the recorder is unhealthy —
+the `record` daemon not running, or no book snapshot stored for over six
+hours — so a silently dead recorder is visible instead of discovered days
+later; exchange outages that overlap a game's window are shaded red on
 the chart and listed above it, and the green dashed vertical line marks
 scheduled game start. Time-series charts (odds, timeline-vs-odds, model WP)
 zoom with the mouse wheel or by dragging a box, pan with shift+drag, and
@@ -260,40 +263,66 @@ Two outcome-based models evaluate drafts and events without any market data
   part of the fitted feature contract. Soul requires four non-Elder dragons;
   Elder kills are tracked separately and cannot accidentally satisfy Soul.
 
+  The v6 contract adds three live-derivable inputs. A gol.gg-based team Elo
+  joins the pregame stage: the Oracle's Elixir CSV goes stale for weeks at a
+  time (Drive quota), and by August 2026 23% of new games had no OE rating —
+  the gol.gg Elo covers 99.8% and `live.team_priors` now serves it (falling
+  back to the OE Elo when a gol.gg lookup misses). Relative gold share and
+  time-since-last-kill join the state features. On the same holdout this
+  moves game-weighted Brier from 0.14382 to 0.14341 (paired game-block delta
+  −0.00041, 95% interval −0.00117..+0.00031, 55.7% of games improved); the
+  gain is concentrated exactly where the failure mode lives — games with a
+  missing OE prior improve by −0.00476 (n=412) while fully-covered games are
+  flat — so the live benefit under a stale OE feed exceeds the backtest
+  average. Contract note: void grubs, herald, Atakhan and plate counts remain
+  excluded because the official live window feed does not carry them; the
+  respawn-timer features (`baron_up`, `dragon_up`) would need dragon-kill
+  clock tracking in the live path before they can enter the contract.
+
   On the current causal rebuild (15,263 games), the strict newest-date holdout
-  is 3,064 games. The constrained GAM wins with game-weighted Brier 0.14386
-  (95% game-block interval 0.13905–0.14917), state-weighted Brier 0.15483, and
-  state log-loss 0.46564, versus 0.21301 / 0.62702 for its pregame-only prior.
-  Removing the shape constraints changes game-Brier by only +0.00001 (paired
-  interval includes zero); monotone boosting is +0.00200 worse and ridge is
-  +0.00283 worse, with both paired intervals excluding zero. Neither convex
-  ensemble improves on the constrained GAM. The older market-aligned model zoo
-  remains as a research benchmark. On event-aligned points inside the same
-  newest-date test block, the constrained GAM scores state Brier 0.11813 versus
-  Polymarket's 0.11220, and 0.12182 versus Kalshi's 0.11416; these
-  event-triggered samples favour the markets and are reported separately from
-  fixed-minute accuracy.
+  is 3,064 games. The v6 constrained GAM scores game-weighted Brier 0.14341,
+  state-weighted Brier 0.15448, versus 0.21301 / 0.62702 game/log-loss for its
+  pregame-only prior (v5: 0.14386 / 0.15483). Removing the shape constraints
+  changes game-Brier by only +0.00001 (paired interval includes zero);
+  monotone boosting is +0.00200 worse and ridge is +0.00283 worse, with both
+  paired intervals excluding zero — but note those bench competitors all share
+  the GAM's slim feature contract, so they compare model *families*, not the
+  best available model. The strongest legacy spec, `champscale_reg(l2=800,
+  cap15)` from the exploration zoo (full feature set plus champion×time
+  terms), still beats the deployed GAM on this same holdout: fixed-minute
+  state Brier 0.15312 vs 0.15448 and game Brier 0.14219 vs 0.14341, winning
+  every phase and event slice (rerun 2026-08-29). The GAM stays deployed as a
+  deliberate trade: shape constraints bound live misbehavior, its contract is
+  provably identical between the historical fit and the live feed, and the
+  shadow protocol declares it — the ~0.0011–0.0014 game-Brier gap is the
+  price, and closing it (an in-game champion×time channel distilled into the
+  contract) is the known next step. Neither convex ensemble improves on the
+  constrained GAM. On event-aligned points inside the same newest-date test
+  block, the v6 GAM scores state Brier 0.11814 versus Polymarket's 0.11220,
+  and 0.12180 versus Kalshi's 0.11416; these event-triggered samples favour
+  the markets and are reported separately from fixed-minute accuracy.
 
   `python3 -m lol_ticker wpx blend` tests probability-space and log-odds
   averages, market recalibration, positive logistic stacking and time-varying
   blends with nested chronological selection (`lol_ticker/wpblend.py`). At
-  event instants, the selected positive logit stack lowers game-weighted Brier
-  from 0.10572 (Polymarket) and 0.10892 (model) to 0.09360 over 1,866 untouched
-  games; against Kalshi it lowers 0.10974 / 0.11450 to 0.09783 over 420 games.
-  The paired improvements over the markets are 0.01212 (95% game-block interval
-  0.00995–0.01435) and 0.01191 (0.00644–0.01752), respectively.
+  event instants (v6 rerun), the selected positive logit stack lowers
+  game-weighted Brier from 0.10572 (Polymarket) and 0.10898 (model) to 0.09359
+  over 1,866 untouched games; against Kalshi it lowers 0.10974 / 0.11428 to
+  0.09791 over 420 games. The paired improvements over the markets are 0.01213
+  (95% game-block interval 0.00985–0.01442) and 0.01183 (0.00646–0.01727),
+  respectively.
 
   The retrospective latency benchmark is `python3 -m lol_ticker wpx blend-live --lead 45`:
   every causal fixed-minute model state is paired with the last executable quote
   45 seconds later. Polymarket selects a direct-Brier positive logit stack,
-  `logit(p) = b₀ + b_market logit(p_market) + b_model logit(p_model)`; it scores 0.14282 versus
-  0.15069 for the market and 0.14840 for the model over 1,591 test games.
-  Kalshi selects a static positive logit stack and scores 0.13861 versus
-  0.14850 / 0.14563 over 344 games. Both improvements over the market have
+  `logit(p) = b₀ + b_market logit(p_market) + b_model logit(p_model)`; it scores 0.14292 versus
+  0.15069 for the market and 0.14867 for the model over 1,591 test games.
+  Kalshi selects a static positive logit stack and scores 0.13891 versus
+  0.14850 / 0.14618 over 344 games. Both improvements over the market have
   paired intervals excluding zero. Repeating the full selection at 30 and 60
   seconds gives the same conclusion. When both exchanges are present at +45 s,
-  Kalshi's two-way stack has the best game-weighted Brier (0.14296); the
-  three-way stack is only 0.00013 worse and its paired interval crosses zero,
+  Kalshi's two-way stack has the best game-weighted Brier (0.14325); the
+  three-way stack is only 0.00011 worse and its paired interval crosses zero,
   so that experiment selected the simpler Kalshi/model blend. These results
   are retained for research under `data/wpx/blend_*.json`, but current-match
   exchange quotes are not forecast inputs and this artifact is not deployed.
@@ -302,10 +331,10 @@ Two outcome-based models evaluate drafts and events without any market data
   the in-game coefficients to time zero. The causal `t=0` model is compared
   with the stored post-draft quote at game start +2 minutes (so the market is
   explicitly given 120 seconds of early-game information). Polymarket's logit
-  stack scores 0.19655 versus 0.20124 for the market and 0.20451 for the model
+  stack scores 0.19662 versus 0.20124 for the market and 0.20520 for the model
   over 1,866 test games; its paired market-minus-blend interval is
-  0.00247–0.00692. Kalshi selects market-only Platt recalibration, scoring
-  0.20396 versus 0.21021 for raw market and 0.21767 for the model over 420
+  0.00261–0.00667. Kalshi selects market-only Platt recalibration, scoring
+  0.20396 versus 0.21021 for raw market and 0.21848 for the model over 420
   games (paired interval 0.00066–0.01195). In other words, the odds-free model
   adds post-draft information to Polymarket on this cohort, but not to Kalshi.
   This remains a retrospective comparison rather than a deployed live input.
@@ -316,9 +345,9 @@ Two outcome-based models evaluate drafts and events without any market data
   inference accepts only the outcome GAM probability and its underlying
   team/draft/game-state features. A middle date block selects the historical
   teacher's log-odds weight and the newest 20% of games is an untouched
-  deployment gate. On the current rebuild, the standalone GAM scores
-  game-balanced Brier 0.143818 versus 0.143942 for the historical blend
-  (blend-minus-model +0.000124, 95% paired interval -0.000067..+0.000324), so
+  deployment gate. On the current v6 rebuild, the standalone GAM scores
+  game-balanced Brier 0.143406 versus 0.143547 for the historical blend
+  (blend-minus-model +0.000141, 95% paired interval -0.000052..+0.000345), so
   the historical blend is rejected and the standalone GAM remains deployed.
 
 ### Prospective shadow scoring
@@ -335,8 +364,9 @@ backfilled. Outcomes are written later to a separate table; remade attempts
 are voided.
 
 The protocol is content-addressed and registered before the first prediction.
-The active-objective correction starts a fresh `shadow_v5_active_objectives`
-ledger; all v2–v4 forecasts remain immutable and queryable.
+The v6 contract change (gol.gg Elo prior, gold share, kill recency) starts a
+fresh `shadow_v6_gg_prior_tempo` ledger; all earlier forecasts remain
+immutable and queryable.
 Its primary metric is game-balanced Brier for the deployed independent
 forecast versus the raw market on the same `(game, minute)` rows, with a paired
 game-block bootstrap interval. Runs

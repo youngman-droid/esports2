@@ -31,7 +31,7 @@
 </style>
 </head>
 <body>
-<h1>LoL Ticker</h1><span id="kstatus" class="unk">kalshi: ?</span>
+<h1>LoL Ticker</h1><span id="kstatus" class="unk">kalshi: ?</span> <span id="recstatus" class="unk" style="display:none"></span>
 <div style="margin-top:12px;padding:8px 10px;border:1px solid #ddd;border-radius:6px">
   <b style="font-size:13px">Browse</b>
   <select id="pk-season"></select>
@@ -304,6 +304,15 @@ async function refreshStatus(){
     el.className='bad';
     el.textContent = 'kalshi: TRADING PAUSED' + (s.halted_since ? ' since '+fmtT(s.halted_since) : '');
   } else { el.className='unk'; el.textContent='kalshi: unknown'; }
+  // recorder health: only surface it when something is wrong
+  const rec = document.getElementById('recstatus');
+  const age = s.record_snapshot_age_s;
+  if (s.record_daemon_running === false){
+    rec.style.display=''; rec.className='bad'; rec.textContent='recorder: NOT RUNNING';
+  } else if (age != null && age > 6*3600){
+    rec.style.display=''; rec.className='bad';
+    rec.textContent = 'recorder: last snapshot ' + (age/3600).toFixed(1) + 'h ago';
+  } else { rec.style.display='none'; }
 }
 refreshStatus(); setInterval(refreshStatus, 60000);
 

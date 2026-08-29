@@ -33,10 +33,25 @@ def _db():
 
 
 def api_status():
-    """Live Kalshi trading status, falling back to the outages table."""
+    """Live Kalshi trading status, falling back to the outages table.
+
+    Also reports recorder health: whether a ``lol_ticker record`` process is
+    alive and how old the newest stored book snapshot is, so a silently dead
+    daemon shows up in the header instead of as a mysteriously flat chart.
+    """
     out = {"kalshi_trading_active": None, "halted_since": None, "recent_outages": []}
+    try:
+        import subprocess
+        out["record_daemon_running"] = subprocess.run(
+            ["pgrep", "-f", "lol_ticker record"], capture_output=True,
+            timeout=5).returncode == 0
+    except Exception:
+        out["record_daemon_running"] = None
     with _conn_lock:
         conn = _db()
+        row = conn.execute(
+            "SELECT extract(epoch from now() - max(ts)) AS age FROM book_snapshots").fetchone()
+        out["record_snapshot_age_s"] = round(row["age"]) if row and row["age"] is not None else None
         out["halted_since"] = db.ongoing_outage(conn, "kalshi")
         rows = conn.execute(
             """SELECT kind, start_ts, end_ts FROM outages WHERE platform='kalshi'
@@ -719,7 +734,7 @@ def api_live_estimate(params):
             del live.team_priors._cache
         priors = live.team_priors(conn, g["teams"])
         try:
-            r = live.estimate(conn, g["game_id"], {k: v for k, v in priors.items() if k in ("elo_oe", "pelo_oe", "form_diff")})
+            r = live.estimate(conn, g["game_id"], {k: v for k, v in priors.items() if k in live.PRIOR_KEYS})
         except Exception as e:
             conn.rollback()
             return {"error": "feed/model failed: %s" % e}
@@ -813,14 +828,14 @@ def api_live_series(params):
             del live.team_priors._cache
         priors = live.team_priors(conn, g["teams"])
         try:
-            r = live.estimate_series(conn, g["game_id"], {k: v for k, v in priors.items() if k in ("elo_oe", "pelo_oe", "form_diff")}, since)
+            r = live.estimate_series(conn, g["game_id"], {k: v for k, v in priors.items() if k in live.PRIOR_KEYS}, since)
             # the feed is the authority on sides: if it disagrees with the schedule's side info, swap
             ids = g.get("team_ids") or []
             if r.get("blue_team_id") and len(ids) == 2 and r["blue_team_id"] == ids[1]:
                 g["teams"] = g["teams"][::-1]; g["team_ids"] = ids[::-1]; g["wins"] = (g.get("wins") or [])[::-1]
                 _live_mk_cache.pop(g["game_id"], None)
                 priors = live.team_priors(conn, g["teams"])
-                r = live.estimate_series(conn, g["game_id"], {k: v for k, v in priors.items() if k in ("elo_oe", "pelo_oe", "form_diff")}, since)
+                r = live.estimate_series(conn, g["game_id"], {k: v for k, v in priors.items() if k in live.PRIOR_KEYS}, since)
         except Exception as e:
             conn.rollback()
             return {"error": "feed/model failed: %s" % e}
