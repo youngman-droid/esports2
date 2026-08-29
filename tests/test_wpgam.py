@@ -65,11 +65,13 @@ class FeatureContractTests(unittest.TestCase):
 class ArtifactTests(unittest.TestCase):
     def _model(self):
         npre = len(wpgam.PREGAME_FEATURES)
-        nf = 2 + len(wpgam.STATE_FEATURES)
+        n_inputs = len(wpgam.PRIOR_INPUTS)
+        nf = n_inputs + len(wpgam.STATE_FEATURES)
         theta = np.zeros((nf + 1, len(wpgam.TIME_KNOTS)))
         theta[1, :] = 1.0  # pregame team logit
         theta[2, :] = 1.0  # pregame champion logit
-        theta[3, :] = 1.0  # gold advantage
+        theta[3, :] = 1.0  # champion state score
+        theta[1 + n_inputs, :] = 1.0  # gold advantage
         team_beta = np.zeros(npre)
         team_beta[0] = 1.0
         return {
@@ -81,11 +83,12 @@ class ArtifactTests(unittest.TestCase):
             },
             "state": {
                 "theta": theta,
-                "feature_names": np.array(["prior_team_logit", "prior_champ_logit"] + wpgam.STATE_FEATURES),
+                "feature_names": np.array(wpgam.PRIOR_INPUTS + wpgam.STATE_FEATURES),
                 "mean": np.zeros(nf), "std": np.ones(nf),
                 "lo": np.full(nf, -10.0), "hi": np.full(nf, 10.0),
                 "knots": wpgam.TIME_KNOTS,
             },
+            "champ_state": {"beta": np.array([0.3]), "cap_min": 15.0, "l2": 800.0},
         }
 
     def test_artifact_round_trip_and_monotonic_prediction(self):
@@ -100,14 +103,32 @@ class ArtifactTests(unittest.TestCase):
             better = dict(base, gold_diff_k=1.0)
             p1 = wpgam.predict_live(better, path=path)["p_blue"]
             self.assertGreater(p1, p0)
-            pc = wpgam.predict_live(base, blue_champs=["Ahri"], path=path)["p_blue"]
-            self.assertGreater(pc, p0)
+            out = wpgam.predict_live(base, blue_champs=["Ahri"], path=path)
+            self.assertGreater(out["p_blue"], p0)
+            # the in-game champion channel contributes on top of the pregame one
+            self.assertGreater(out["lo_champ_state"], 0.0)
+            enemy = wpgam.predict_live(base, red_champs=["Ahri"], path=path)
+            self.assertLess(enemy["lo_champ_state"], 0.0)
 
     def test_production_live_default_uses_blend_base_model(self):
         self.assertEqual(wpx.LIVE_MODEL_PATH, wpgam.MODEL_PATH)
-        self.assertEqual(wpx.predict_live.__defaults__[-1], wpgam.MODEL_PATH)
+        self.assertEqual(wpx.predict_live.__defaults__[-2], wpgam.MODEL_PATH)
         with np.load(wpx.LIVE_MODEL_PATH, allow_pickle=False) as artifact:
             self.assertEqual(str(artifact["kind"].item()), wpgam.MODEL_KIND)
+
+    def test_production_live_blend_lies_between_components(self):
+        state = {"t_min": 22.0, "gold_diff_k": 2.5, "gold_diff_prev_k": 2.0,
+                 "gold_blue": 42000, "gold_red": 39500, "kills": 4, "towers": 2,
+                 "towers_blue": 5, "towers_red": 3, "elo_oe": 0.2}
+        out = wpx.predict_live(state)
+        self.assertIn("p_gam", out)
+        self.assertIn("p_legacy", out)
+        lo = min(out["p_gam"], out["p_legacy"]) - 1e-9
+        hi = max(out["p_gam"], out["p_legacy"]) + 1e-9
+        self.assertTrue(lo <= out["p_blue"] <= hi)
+        self.assertEqual(out["blend_w_gam"], wpx.LIVE_BLEND_W_GAM)
+        gam_only = wpx.predict_live(state, blend=False)
+        self.assertEqual(gam_only["p_blue"], out["p_gam"])
 
 
 class TemporalCalibrationTests(unittest.TestCase):

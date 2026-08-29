@@ -57,12 +57,8 @@ def _historical_target(d):
 def _raw_rows(d, model, mask):
     """Independent production features and base probabilities for selected rows."""
     names = list(d["names"])
-    pre = model["pregame"]
-    pre_raw = wpgam.pregame_values_from_matrix(d["X"][mask], names)
-    _, team, champ = wpgam.predict_pregame(pre, pre_raw, d["C"][mask])
     raw = np.column_stack([
-        pre["intercept"] + team,
-        champ,
+        wpgam.prior_values_from_matrix(model, d["X"][mask], names, d["C"][mask]),
         wpgam.state_values_from_matrix(d["X"][mask], names),
     ])
     t_min = np.asarray(d["t"][mask], dtype=np.float64) / 60.0
@@ -177,8 +173,9 @@ def _live_raw(base, state, blue_champs, red_champs):
         pre["champ_names"], blue_champs, red_champs)
     pre_raw = wpgam.pregame_values_from_live(state)
     _, team, champ = wpgam.predict_pregame(pre, pre_raw, C)
+    champ_state = float(wpgam.champ_state_scores(base["champ_state"]["beta"], C)[0])
     raw = np.concatenate([
-        [pre["intercept"] + float(team[0]), float(champ[0])],
+        [pre["intercept"] + float(team[0]), float(champ[0]), champ_state],
         wpgam.state_values_from_live(state),
     ])[None, :]
     return raw, unknown

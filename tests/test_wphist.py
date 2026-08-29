@@ -12,7 +12,7 @@ class HistoricalOddsTests(unittest.TestCase):
     @staticmethod
     def _base_model():
         npre = len(wpgam.PREGAME_FEATURES)
-        nf = 2 + len(wpgam.STATE_FEATURES)
+        nf = len(wpgam.PRIOR_INPUTS) + len(wpgam.STATE_FEATURES)
         team_beta = np.zeros(npre)
         team_beta[0] = 1.0
         return {
@@ -24,23 +24,22 @@ class HistoricalOddsTests(unittest.TestCase):
             },
             "state": {
                 "theta": np.zeros((nf + 1, len(wpgam.TIME_KNOTS))),
-                "feature_names": np.array(
-                    ["prior_team_logit", "prior_champ_logit"] + wpgam.STATE_FEATURES),
+                "feature_names": np.array(wpgam.PRIOR_INPUTS + wpgam.STATE_FEATURES),
                 "mean": np.zeros(nf), "std": np.ones(nf),
                 "lo": np.full(nf, -10.0), "hi": np.full(nf, 10.0),
                 "knots": wpgam.TIME_KNOTS,
             },
+            "champ_state": {"beta": np.zeros(0), "cap_min": 15.0, "l2": 800.0},
         }
 
     @staticmethod
     def _teacher():
-        nf = 2 + len(wpgam.STATE_FEATURES)
+        nf = len(wpgam.PRIOR_INPUTS) + len(wpgam.STATE_FEATURES)
         theta = np.zeros((nf + 1, len(wpgam.TIME_KNOTS)))
         theta[0, :] = 0.4
         return {
             "theta": theta,
-            "feature_names": np.array(
-                ["prior_team_logit", "prior_champ_logit"] + wpgam.STATE_FEATURES),
+            "feature_names": np.array(wpgam.PRIOR_INPUTS + wpgam.STATE_FEATURES),
             "mean": np.zeros(nf), "std": np.ones(nf),
             "lo": np.full(nf, -10.0), "hi": np.full(nf, 10.0),
             "knots": wpgam.TIME_KNOTS,

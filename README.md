@@ -235,7 +235,8 @@ Two outcome-based models evaluate drafts and events without any market data
   minute-mark comparison (`wpx_fair.py`). The production model is now a
   two-stage, shape-constrained, time-varying logistic GAM: a one-row-per-game
   pregame prior (live-available team/player ratings plus strongly shrunk
-  champion effects), followed by five smooth game-time knots over a small
+  champion effects) and a per-game champion-state score (see the v7 notes
+  below), followed by five smooth game-time knots over a small
   historical/live feature contract. Gold, momentum, CS, objectives, living
   players, HP and level advantages are constrained to have
   non-negative partial effects at every knot. Inputs are standardized, games
@@ -263,6 +264,33 @@ Two outcome-based models evaluate drafts and events without any market data
   part of the fitted feature contract. Soul requires four non-Elder dragons;
   Elder kills are tracked separately and cannot accidentally satisfy Soul.
 
+  The v7 contract adds the **champion-state channel**: per-champion
+  coefficients estimated champscale-style on in-game states — jointly with
+  the full exploration feature set, entering as signed presence × min(t, 15
+  min), l2=800, fit on all training rows including event-anchored ones
+  (restricting to fixed minutes cost 0.0005; the coefficients need
+  teamfight-dense samples) — compressed into one signed per-game score that
+  becomes a third prior input with its own non-negative smooth time curve.
+  Training games receive out-of-fold scores (5 game-level folds) so the
+  state model cannot overweight in-sample champion information. This carries
+  the in-game champion signal that the pregame outcome fit cannot see:
+  walk-forward game Brier 0.14341 → 0.14247, improving every phase and both
+  event-aligned slices, and closing the legacy champscale gap to a
+  statistically indistinguishable +0.00028.
+
+  The **deployed live forecast is a fixed-weight logit blend** of this GAM
+  and the legacy champscale model (`wpx.predict_live`, w_gam=0.45): the
+  weight was selected on the chronological validation block with the test
+  block untouched, and the blend scores 0.14179 versus 0.14247 for the GAM
+  alone (paired 95% interval −0.00125..−0.00011 — the only candidate to
+  clear the deployment bar) and 0.14219 for champscale alone. The selection
+  curve is flat for w_gam 0.25–0.5, so the fixed weight is robust. The cost
+  is that the blend inherits only 45% of the GAM's shape guarantees; the
+  champscale component is probed clean (monotone coherent gold sweeps,
+  honest tails, sane decided states), both component hashes are frozen on
+  every shadow forecast, and `predict_live(..., blend=False)` (or a missing
+  legacy artifact) falls back to the constrained GAM alone.
+
   The v6 contract adds three live-derivable inputs. A gol.gg-based team Elo
   joins the pregame stage: the Oracle's Elixir CSV goes stale for weeks at a
   time (Drive quota), and by August 2026 23% of new games had no OE rating —
@@ -280,43 +308,32 @@ Two outcome-based models evaluate drafts and events without any market data
   clock tracking in the live path before they can enter the contract.
 
   On the current causal rebuild (15,263 games), the strict newest-date holdout
-  is 3,064 games. The v6 constrained GAM scores game-weighted Brier 0.14341,
-  state-weighted Brier 0.15448, versus 0.21301 / 0.62702 game/log-loss for its
-  pregame-only prior (v5: 0.14386 / 0.15483). Removing the shape constraints
-  changes game-Brier by only +0.00001 (paired interval includes zero);
-  monotone boosting is +0.00200 worse and ridge is +0.00283 worse, with both
-  paired intervals excluding zero — but note those bench competitors all share
-  the GAM's slim feature contract, so they compare model *families*, not the
-  best available model. The strongest legacy spec, `champscale_reg(l2=800,
-  cap15)` from the exploration zoo (full feature set plus champion×time
-  terms), still beats the deployed GAM on this same holdout: fixed-minute
-  state Brier 0.15312 vs 0.15448 and game Brier 0.14219 vs 0.14341, winning
-  every phase and event slice on point estimates (rerun 2026-08-29; the
-  paired game-block delta is −0.00122 with 95% interval −0.00262..+0.00028,
-  so the gap is suggestive rather than confirmed on this block). The edge
-  survives fairness controls — trained on the GAM's own fixed-minute rows
-  with its game-balanced loss it still scores 0.14250, and hyperparameter
-  neighbors (l2=200/cap25, l2=100/cap20) all land at ~0.14256 — and its
-  feature set is leak-free (no draft term; RAPM/Elo/form are time-forward by
-  construction). Attribution is clean: champscale *without* its champion
-  columns (plain `logit_xt`) scores 0.14443, worse than the GAM, so the
-  entire edge is the champion×time terms (−0.0022 on their own), while
-  grafting cheap interaction terms (Baron×deaths, lead×inhib) onto the GAM
-  contract moves nothing (0.14340). Separately, an edge-case mispricing:
-  in "Baron + ≥3 more enemies dead while 3–7k behind" states (22–35 min)
-  the advantaged side historically wins 71% (n=245 states / 86 games), the
-  legacy model says ~79%, the GAM ~49% — too rare (245 of 1.76M states) to
-  affect aggregate scores, but live it will read a won fight at Baron while
-  behind too pessimistically. The GAM stays deployed as a
-  deliberate trade: shape constraints bound live misbehavior, its contract is
-  provably identical between the historical fit and the live feed, and the
-  shadow protocol declares it — the ~0.0011–0.0014 game-Brier gap is the
-  price, and closing it (an in-game champion×time channel distilled into the
-  contract) is the known next step. Neither convex ensemble improves on the
-  constrained GAM. On event-aligned points inside the same newest-date test
-  block, the v6 GAM scores state Brier 0.11814 versus Polymarket's 0.11220,
-  and 0.12180 versus Kalshi's 0.11416; these event-triggered samples favour
-  the markets and are reported separately from fixed-minute accuracy.
+  is 3,064 games. The v7 constrained GAM scores game-weighted Brier 0.14247,
+  state-weighted Brier 0.15334, versus 0.21301 for its pregame-only prior
+  (v6: 0.14341 / 0.15448; v5: 0.14386 / 0.15483), and the deployed
+  GAM+champscale blend scores 0.14179. Removing the shape constraints or
+  swapping model families was tested on the v6 contract: unconstrained GAM
+  ±0.00001, monotone boosting +0.00200, ridge +0.00283 — but those bench
+  competitors share the GAM's slim feature contract, so they compare model
+  *families*, not the best available model. The v7 champion-state channel
+  came out of a 2026-08-29 audit of the legacy `champscale_reg(l2=800,cap15)`
+  zoo model, which then still beat the v6 GAM (0.14219 vs 0.14341): the edge
+  survived fairness controls (GAM's own rows and loss: 0.14250; tuning
+  neighbors ~0.14256), its feature set is leak-free (no draft term;
+  RAPM/Elo/form time-forward by construction), and attribution showed the
+  entire edge was the champion×time terms — champscale *without* its champion
+  columns scores 0.14443, worse than the GAM, while grafting cheap
+  interaction terms (Baron×deaths, lead×inhib) onto the contract moved
+  nothing. After v7 the residual champscale edge is +0.00028 (paired interval
+  spans zero). One edge-case mispricing survives in the GAM component: in
+  "Baron + ≥3 more enemies dead while 3–7k behind" states (22–35 min) the
+  advantaged side historically wins 71% (n=245 states / 86 games), champscale
+  says ~79%, the GAM ~49% — too rare (245 of 1.76M states) to affect
+  aggregate scores, and the deployed blend sits in between. On event-aligned
+  points inside the same newest-date test block, the v7 GAM scores state
+  Brier 0.11702 versus Polymarket's 0.11220, and 0.12061 versus Kalshi's
+  0.11416; these event-triggered samples favour the markets and are reported
+  separately from fixed-minute accuracy.
 
   `python3 -m lol_ticker wpx blend` tests probability-space and log-odds
   averages, market recalibration, positive logistic stacking and time-varying
@@ -361,10 +378,11 @@ Two outcome-based models evaluate drafts and events without any market data
   inference accepts only the outcome GAM probability and its underlying
   team/draft/game-state features. A middle date block selects the historical
   teacher's log-odds weight and the newest 20% of games is an untouched
-  deployment gate. On the current v6 rebuild, the standalone GAM scores
-  game-balanced Brier 0.143406 versus 0.143547 for the historical blend
-  (blend-minus-model +0.000141, 95% paired interval -0.000052..+0.000345), so
-  the historical blend is rejected and the standalone GAM remains deployed.
+  deployment gate. On the current v7 rebuild, the standalone GAM scores
+  game-balanced Brier 0.142468 versus 0.142606 for the historical blend
+  (blend-minus-model +0.000138, 95% paired interval -0.000125..+0.000406), so
+  the historical-odds blend is rejected; the deployed forecast remains the
+  GAM+champscale blend described above.
 
 ### Prospective shadow scoring
 
@@ -380,9 +398,10 @@ backfilled. Outcomes are written later to a separate table; remade attempts
 are voided.
 
 The protocol is content-addressed and registered before the first prediction.
-The v6 contract change (gol.gg Elo prior, gold share, kill recency) starts a
-fresh `shadow_v6_gg_prior_tempo` ledger; all earlier forecasts remain
-immutable and queryable.
+The v7 forecast change (champion-state channel plus the deployed
+GAM+champscale blend) starts a fresh `shadow_v7_champ_state` ledger; all
+earlier forecasts remain immutable and queryable, and every forecast row
+freezes the SHA-256 of both blend components.
 Its primary metric is game-balanced Brier for the deployed independent
 forecast versus the raw market on the same `(game, minute)` rows, with a paired
 game-block bootstrap interval. Runs

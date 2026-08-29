@@ -71,6 +71,14 @@ def _load_base(dataset_path):
             "t_min": np.asarray(d["t"])[fixed].astype(np.float64) / 60.0,
             "state": wpgam.state_values_from_matrix(
                 np.asarray(d["X"])[fixed], list(d["names"])),
+            "names": list(d["names"]),
+            # full-row copies for the champion-state channel: its coefficient
+            # fit uses event-anchored rows too when CHAMP_STATE_ALL_ROWS is set
+            "raw_X": np.asarray(d["X"]),
+            "raw_C": np.asarray(d["C"]),
+            "raw_y": np.asarray(d["y"]).astype(np.float64),
+            "raw_gid": all_gid,
+            "raw_fixed": fixed,
             "outer_train": outer_train,
             "inner_train": inner_train,
             "validation": validation,
@@ -89,20 +97,37 @@ def _stacked_arrays(base, game_train):
         base["game_pre"][game_train], base["game_C"][game_train],
         base["game_y"][game_train], base["game_gid"][game_train],
         base["champ_names"], k=5)
-    prior = np.empty((len(game_train), 2), dtype=np.float64)
+    prior = np.empty((len(game_train), 3), dtype=np.float64)
     prior[game_train, 0] = team_oof
     prior[game_train, 1] = champ_oof
+    row_train = game_train[base["row_game"]]
+    train_gids = base["game_gid"][game_train]
+    train_set = set(train_gids.tolist())
+    n_champs = len(base["champ_names"])
+    in_train_all = np.asarray([g in train_set for g in base["raw_gid"]])
+    cs_rows = np.where(in_train_all if wpgam.CHAMP_STATE_ALL_ROWS
+                       else (in_train_all & base["raw_fixed"]))[0]
+    cs_beta = wpgam.fit_champ_state(
+        base["raw_X"], base["names"], base["raw_C"], base["raw_y"],
+        cs_rows, n_champs)
+    cs_by_gid = wpgam.oof_champ_state(
+        base["raw_X"], base["names"], base["raw_C"], base["raw_y"],
+        base["raw_gid"], cs_rows, train_gids, n_champs,
+        k=wpgam.CHAMP_STATE_FOLDS)
+    prior[game_train, 2] = np.asarray([cs_by_gid[g] for g in train_gids])
     other = ~game_train
     if other.any():
         _, team, champ = wpgam.predict_pregame(
             pre, base["game_pre"][other], base["game_C"][other])
         prior[other, 0] = pre["intercept"] + team
         prior[other, 1] = champ
+        prior[other, 2] = wpgam.champ_state_scores(cs_beta, base["game_C"][other])
     raw = np.column_stack([prior[base["row_game"]], base["state"]])
     return {
         "raw": raw,
-        "train": game_train[base["row_game"]],
+        "train": row_train,
         "pregame": pre,
+        "champ_state_beta": cs_beta,
     }
 
 
@@ -156,7 +181,7 @@ def _fit_method(family, spec, raw, y, gids, t_min):
         design, scale = _tree_design_fit(raw, t_min)
         monotone = None
         if family == "monotone_hist_boost":
-            feature_names = ["prior_team_logit", "prior_champ_logit"] + wpgam.STATE_FEATURES
+            feature_names = wpgam.PRIOR_INPUTS + wpgam.STATE_FEATURES
             monotone = [0] + [1 if n in wpgam.MONOTONE_FEATURES else 0
                               for n in feature_names]
         estimator = HistGradientBoostingClassifier(

@@ -16,6 +16,13 @@ hundreds of extra, highly correlated rows.
 v6 additions (each live-derivable from existing feed fields): a gol.gg-based
 team Elo in the pregame stage (OE ratings go stale when the source CSV lags),
 relative gold share, and time since the last kill.
+
+v7 adds the champion-state channel: per-champion coefficients estimated
+champscale-style on in-game states (out-of-fold for training games) are
+compressed into one signed per-game score that enters the state model as a
+third prior input with a non-negative smooth time curve.  This carries the
+in-game champion information that the pregame outcome fit cannot see and
+closed most of the legacy champscale model's remaining accuracy edge.
 """
 import json
 import logging
@@ -28,13 +35,26 @@ from . import config
 
 
 log = logging.getLogger("wpgam")
-MODEL_KIND = "wpgam_v6_gg_prior_tempo"
+MODEL_KIND = "wpgam_v7_champ_state"
 OUT_DIR = os.path.join(config.REPO_ROOT, "data", "wpx")
 MODEL_PATH = os.path.join(OUT_DIR, "model_live_gam.npz")
 
 TIME_KNOTS = np.array([0.0, 10.0, 20.0, 30.0, 45.0], dtype=np.float64)
 STATE_L2 = 24.0
 STATE_SMOOTH = 70.0
+# Champion-state channel: per-champion coefficients fit champscale-style on
+# in-game states (jointly with the full exploration feature set, entering as
+# presence x min(t, cap)); the hyperparameters are the time-forward-validated
+# champscale spec.  The per-game signed score enters the state model as a
+# third prior input whose non-negative knot curve learns the time ramp.
+# The coefficient fit uses ALL training rows (fixed-minute + event-anchored):
+# champion effects need the teamfight-dense event samples — restricting the
+# fit to fixed minutes cost 0.0005 game Brier on the newest-date holdout.
+CHAMP_STATE_L2 = 800.0
+CHAMP_STATE_CAP_MIN = 15.0
+CHAMP_STATE_ALL_ROWS = True
+CHAMP_STATE_FOLDS = 5
+PRIOR_INPUTS = ["prior_team_logit", "prior_champ_logit", "prior_champ_state"]
 # elo_gg (gol.gg-based team Elo) backs up the Oracle's Elixir ratings, whose
 # source CSV can go stale for weeks; gol.gg coverage is ~99.8% of games.
 PREGAME_FEATURES = ["elo_oe", "pelo_oe", "form_diff", "elo_gg"]
@@ -54,7 +74,8 @@ STATE_FEATURES = [
 # A non-negative coefficient at each time knot makes the partial derivative of
 # log-odds with respect to these oriented advantages non-negative everywhere.
 MONOTONE_FEATURES = {
-    "prior_team_logit", "prior_champ_logit", "gold_k", "gold_mom", "cs_k", "d_kill", "d_tower",
+    "prior_team_logit", "prior_champ_logit", "prior_champ_state",
+    "gold_k", "gold_mom", "cs_k", "d_kill", "d_tower",
     "d_dragon", "d_baron", "baron_active", "d_inhib", "d_elder",
     "elder_active", "soul", "dead_adv",
     "dead_adv_sq", "dead_count_sq_adv", "dead_base_pressure",
@@ -330,18 +351,98 @@ def _game_balanced_weights(gids):
     return w / w.mean()
 
 
+def fit_champ_state(X, names, C, y, rows, n_champs, l2_champ=CHAMP_STATE_L2,
+                    cap_min=CHAMP_STATE_CAP_MIN):
+    """Per-champion in-game coefficients, champscale spec.
+
+    Joint ridge-IRLS of the outcome on the full exploration feature set, its
+    xtime expansion, and signed champion presence x min(t, cap): the champion
+    block absorbs what champions predict *conditional on game state*, which
+    the pregame outcome fit cannot see.  Returns only the champion block.
+    """
+    from .wpx import ALREADY_INTERACTED
+
+    X = np.asarray(X)
+    idx = {str(n): i for i, n in enumerate(names)}
+    rich = [i for i, n in enumerate(names) if str(n) != "draft"]
+    xcols = [c for c in rich if str(names[c]) not in ALREADY_INTERACTED
+             and str(names[c]) != "bias"]
+    t_col = idx["t"]
+    Xm = X[rows]
+    B = Xm[:, rich].astype(np.float64)
+    t_raw = Xm[:, t_col:t_col + 1].astype(np.float64)
+    tt = np.minimum(t_raw, cap_min / 30.0)
+    S = _champ_matrix(np.asarray(C)[rows], n_champs) * tt
+    A = np.hstack([B, Xm[:, xcols].astype(np.float64) * t_raw, S])
+    ytr = np.asarray(y)[rows].astype(np.float64)
+    beta = np.zeros(A.shape[1])
+    reg = np.full(A.shape[1], 1.0)
+    reg[0] = 0.0
+    if n_champs:
+        reg[-n_champs:] = l2_champ
+    for _ in range(30):
+        p = _sigmoid(A @ beta)
+        W = p * (1 - p) + 1e-9
+        step = np.linalg.solve((A * W[:, None]).T @ A + np.diag(reg),
+                               A.T @ (p - ytr) + reg * beta)
+        beta -= step
+        if np.max(np.abs(step)) < 1e-6:
+            break
+    if not np.all(np.isfinite(beta)):
+        raise FloatingPointError("champ-state IRLS returned non-finite coefficients")
+    return beta[-n_champs:].copy() if n_champs else np.zeros(0)
+
+
+def champ_state_scores(beta, C):
+    """Signed per-game champion score: own champions add, enemy subtract."""
+    return _champ_matrix(C, len(beta)) @ np.asarray(beta, dtype=np.float64)
+
+
+def oof_champ_state(X, names, C, y, gid, rows_pool, train_gids, n_champs,
+                    k=5, seed=41):
+    """Out-of-fold champion-state score per training game.
+
+    ``rows_pool`` are the candidate fitting rows (fixed-minute training rows);
+    each game's score comes from a fit that excluded that game.
+    """
+    gid = np.asarray(gid)
+    train_gids = np.asarray(train_gids)
+    folds = _fold_ids(train_gids, k, seed=seed)
+    fold_of = {g: f for g, f in zip(train_gids, folds)}
+    pool_gid = gid[rows_pool]
+    scores = {}
+    game_rows = _game_rows(gid)
+    row_of_game = {g: i for g, i in zip(gid[game_rows], game_rows)}
+    for f in range(folds.max() + 1):
+        fit_rows = rows_pool[np.asarray([fold_of.get(g) != f for g in pool_gid])]
+        beta = fit_champ_state(X, names, C, y, fit_rows, n_champs)
+        for g in train_gids[folds == f]:
+            row = row_of_game[g]
+            scores[g] = float(champ_state_scores(beta, np.asarray(C)[row:row + 1])[0])
+    return scores
+
+
+def prior_values_from_matrix(model, X, names, C):
+    """[prior_team_logit, prior_champ_logit, prior_champ_state] for stored rows."""
+    pre = model["pregame"]
+    pre_raw = pregame_values_from_matrix(X, names)
+    _, team, champ = predict_pregame(pre, pre_raw, C)
+    score = champ_state_scores(model["champ_state"]["beta"], np.asarray(C))
+    return np.column_stack([pre["intercept"] + team, champ, score])
+
+
 def fit_state_model(raw, y, gids, t_min, knots=TIME_KNOTS, l2=STATE_L2,
                     smooth=STATE_SMOOTH, maxiter=300,
                     monotone_features=MONOTONE_FEATURES):
     """Fit the bounded smooth coefficient surface.
 
-    ``raw`` columns are [prior_team_logit, prior_champ_logit] + STATE_FEATURES.
+    ``raw`` columns are PRIOR_INPUTS + STATE_FEATURES.
     """
     from scipy.optimize import minimize
 
     raw = np.asarray(raw, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
-    feature_names = ["prior_team_logit", "prior_champ_logit"] + STATE_FEATURES
+    feature_names = PRIOR_INPUTS + STATE_FEATURES
     if raw.shape[1] != len(feature_names):
         raise ValueError("wrong state feature width")
     mean, std, lo, hi = _scale_fit(raw)
@@ -472,12 +573,16 @@ def _game_rows(gid):
 
 def _temporal_state_calibration(tr_pre, tr_C, tr_y, tr_gid, tr_dates,
                                 champ_names, state, y, gid, t_s, seq,
+                                cs_by_gid=None,
                                 l2=STATE_L2, smooth=STATE_SMOOTH):
     """Calibrate on the newest date block using only earlier games.
 
     This mirrors deployment more closely than random folds: both the pregame
     stack and the state model that score the calibration games are trained
     strictly on earlier dates.  Complete match dates stay in one block.
+    ``cs_by_gid`` carries the main fit's out-of-fold champion-state scores;
+    reusing them here (instead of refitting the champion block early-only)
+    biases only the calibration estimate, in the conservative direction.
     """
     tr_dates = np.asarray(tr_dates).astype(str)
     if len(tr_dates) < 100 or np.any(tr_dates == ""):
@@ -497,10 +602,12 @@ def _temporal_state_calibration(tr_pre, tr_C, tr_y, tr_gid, tr_dates,
     prior.update({g: (pre["intercept"] + pt, pc) for g, pt, pc in
                   zip(tr_gid[~early], team, champ)})
 
+    cs_by_gid = cs_by_gid or {}
     training_games = set(tr_gid.tolist())
     rows = (seq < 0) & np.asarray([g in training_games for g in gid])
     row_gid = gid[rows]
-    row_prior = np.asarray([prior[g] for g in row_gid], dtype=np.float64)
+    row_prior = np.asarray([prior[g] + (cs_by_gid.get(g, 0.0),)
+                            for g in row_gid], dtype=np.float64)
     raw = np.column_stack([row_prior, state[rows]])
     early_games = set(tr_gid[early].tolist())
     fit = np.asarray([g in early_games for g in row_gid])
@@ -513,7 +620,9 @@ def _temporal_state_calibration(tr_pre, tr_C, tr_y, tr_gid, tr_dates,
 
 def fit_arrays(X, y, gid, t_s, seq, C, names, champ_names, train_games=None,
                pregame_folds=5, dates=None, state_l2=STATE_L2,
-               state_smooth=STATE_SMOOTH, calibration="temporal"):
+               state_smooth=STATE_SMOOTH, calibration="temporal",
+               champ_state_all_rows=CHAMP_STATE_ALL_ROWS,
+               champ_state_folds=CHAMP_STATE_FOLDS):
     X, y, gid, t_s, seq, C = map(np.asarray, (X, y, gid, t_s, seq, C))
     game_i = _game_rows(gid)
     game_gid, game_y, game_C = gid[game_i], y[game_i], C[game_i]
@@ -528,15 +637,25 @@ def fit_arrays(X, y, gid, t_s, seq, C, names, champ_names, train_games=None,
     pre_full = fit_pregame(tr_pre, tr_C, tr_y, champ_names)
     pre_team_oof, pre_champ_oof = oof_pregame(tr_pre, tr_C, tr_y, tr_gid, champ_names, k=pregame_folds)
 
+    train_gid_set = set(tr_gid.tolist())
+    row_train = np.asarray([g in train_gid_set for g in gid])
+    minute_train = (seq < 0) & row_train
+    n_champs = len(champ_names)
+    cs_rows = np.where(row_train if champ_state_all_rows else minute_train)[0]
+    cs_beta = fit_champ_state(X, names, C, y, cs_rows, n_champs)
+    cs_by_gid = oof_champ_state(X, names, C, y, gid, cs_rows, tr_gid,
+                                n_champs, k=champ_state_folds)
+
     prior_by_gid = {g: (pt, pc) for g, pt, pc in zip(tr_gid, pre_team_oof, pre_champ_oof)}
     other = ~train_games
     if other.any():
         _, team, champ = predict_pregame(pre_full, game_pre[other], game_C[other])
         prior_by_gid.update({g: (pre_full["intercept"] + pt, pc)
                              for g, pt, pc in zip(game_gid[other], team, champ)})
-    row_prior = np.asarray([prior_by_gid[g] for g in gid], dtype=np.float64)
-    train_gid_set = set(tr_gid.tolist())
-    minute_train = (seq < 0) & np.asarray([g in train_gid_set for g in gid])
+        other_scores = champ_state_scores(cs_beta, game_C[other])
+        cs_by_gid.update({g: float(s) for g, s in zip(game_gid[other], other_scores)})
+    row_prior = np.asarray([prior_by_gid[g] + (cs_by_gid[g],) for g in gid],
+                           dtype=np.float64)
     state = state_values_from_matrix(X, names)
     state_raw = np.column_stack([row_prior, state])
     raw_train, y_train = state_raw[minute_train], y[minute_train]
@@ -545,7 +664,8 @@ def fit_arrays(X, y, gid, t_s, seq, C, names, champ_names, train_games=None,
     if calibration == "temporal" and game_dates is not None:
         temporal = _temporal_state_calibration(
             tr_pre, tr_C, tr_y, tr_gid, game_dates[train_games], champ_names,
-            state, y, gid, t_s, seq, l2=state_l2, smooth=state_smooth)
+            state, y, gid, t_s, seq, cs_by_gid=cs_by_gid,
+            l2=state_l2, smooth=state_smooth)
     if temporal is None:
         cal_intercept, cal_slope = calibrate_state_model(
             raw_train, y_train, gid_train, time_train,
@@ -567,6 +687,8 @@ def fit_arrays(X, y, gid, t_s, seq, C, names, champ_names, train_games=None,
     state_model["l2"] = float(state_l2)
     state_model["smooth"] = float(state_smooth)
     return {"pregame": pre_full, "state": state_model,
+            "champ_state": {"beta": cs_beta, "cap_min": CHAMP_STATE_CAP_MIN,
+                            "l2": CHAMP_STATE_L2},
             "train_games": int(train_games.sum()), "train_states": int(minute_train.sum())}
 
 
@@ -586,6 +708,9 @@ def save_model(model, path=MODEL_PATH, meta=None):
         "state_l2": np.asarray(state.get("l2", STATE_L2)),
         "state_smooth": np.asarray(state.get("smooth", STATE_SMOOTH)),
         "calibration_method": np.asarray(state.get("calibration_method", "unknown")),
+        "champ_state_beta": np.asarray(model["champ_state"]["beta"], dtype=np.float64),
+        "champ_state_cap_min": np.asarray(float(model["champ_state"]["cap_min"])),
+        "champ_state_l2": np.asarray(float(model["champ_state"]["l2"])),
         "meta": np.asarray(json.dumps(meta or {}, sort_keys=True)),
     }
     np.savez_compressed(path, **payload)
@@ -612,6 +737,11 @@ def load_model(path=MODEL_PATH):
             "smooth": float(d["state_smooth"]) if "state_smooth" in d.files else STATE_SMOOTH,
             "calibration_method": (str(d["calibration_method"].item())
                                    if "calibration_method" in d.files else "unknown"),
+        },
+        "champ_state": {
+            "beta": d["champ_state_beta"],
+            "cap_min": float(d["champ_state_cap_min"]),
+            "l2": float(d["champ_state_l2"]),
         },
         "meta": json.loads(str(d["meta"].item())),
     }
@@ -659,17 +789,22 @@ def predict_live(state, blue_champs=(), red_champs=(), path=MODEL_PATH):
     pre_raw = pregame_values_from_live(state)
     _, pre_team, pre_champ = predict_pregame(pre, pre_raw, C)
     pre_team_total = pre["intercept"] + float(pre_team[0])
-    state_raw = np.concatenate([[pre_team_total, float(pre_champ[0])], state_values_from_live(state)])[None, :]
+    champ_state = float(champ_state_scores(model["champ_state"]["beta"], C)[0])
+    state_raw = np.concatenate([[pre_team_total, float(pre_champ[0]), champ_state],
+                                state_values_from_live(state)])[None, :]
     t_min = float(state.get("t_min", 0.0) or 0.0)
     p, eta, parts = predict_state(model["state"], state_raw, [t_min], components=True)
 
     # Split the state model's pregame-logit contribution into team and champion
     # pieces without changing their sum.  Centering belongs to the team/prior
-    # component; champion contribution is purely the learned champion logit.
+    # component; champion contribution combines the pregame champion logit and
+    # the in-game champion-state channel.
     lo_prior = float(parts[0, 1])
-    lo_champ = float(parts[0, 2])
+    lo_champ_pre = float(parts[0, 2])
+    lo_champ_state = float(parts[0, 3])
+    lo_champ = lo_champ_pre + lo_champ_state
     lo_time = float(parts[0, 0])
-    state_parts = dict(zip(STATE_FEATURES, parts[0, 3:]))
+    state_parts = dict(zip(STATE_FEATURES, parts[0, 1 + len(PRIOR_INPUTS):]))
     lo_state = float(sum(state_parts.values()))
     lo_deaths = float(sum(state_parts.get(n, 0.0) for n in
                           ("dead_adv", "dead_adv_sq", "dead_count_sq_adv",
@@ -682,6 +817,7 @@ def predict_live(state, blue_champs=(), red_champs=(), path=MODEL_PATH):
     return {"p_blue": round(float(p[0]), 4), "unknown_champions": unknown,
             "lo_prior": round(lo_prior, 3), "lo_state": round(lo_state, 3),
             "lo_champ": round(lo_champ, 3), "lo_time": round(lo_time, 3),
+            "lo_champ_state": round(lo_champ_state, 3),
             "lo_deaths": round(lo_deaths, 3),
             "lo_baron_active": round(lo_baron_active, 3),
             "lo_elder_active": round(lo_elder_active, 3),
@@ -742,12 +878,12 @@ def evaluate_walk_forward(dataset_path=None, holdout=0.2, bootstrap=1000):
 
     pre = model["pregame"]
     def predict_rows(mask):
-        pre_raw = pregame_values_from_matrix(d["X"][mask], list(d["names"]))
-        _, pre_team, pre_champ = predict_pregame(pre, pre_raw, d["C"][mask])
-        raw = np.column_stack([pre["intercept"] + pre_team, pre_champ,
+        prior = prior_values_from_matrix(model, d["X"][mask], list(d["names"]),
+                                         d["C"][mask])
+        raw = np.column_stack([prior,
                                state_values_from_matrix(d["X"][mask], list(d["names"]))])
         state_p = predict_state(model["state"], raw, d["t"][mask] / 60.0)
-        pre_p = _sigmoid(pre["intercept"] + pre_team + pre_champ)
+        pre_p = _sigmoid(prior[:, 0] + prior[:, 1])
         return state_p, pre_p
 
     p, p_pre = predict_rows(test)

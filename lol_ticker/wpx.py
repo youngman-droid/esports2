@@ -945,17 +945,51 @@ def _predict_live_legacy(state, blue_champs=(), red_champs=(), path=LEGACY_LIVE_
             "lo_prior": round(lo_prior, 3), "lo_state": round(lo_state, 3), "lo_champ": round(lo_champ, 3), "lo_time": round(lo_time, 3)}
 
 
-def predict_live(state, blue_champs=(), red_champs=(), path=LIVE_MODEL_PATH):
-    """Score a live state with the constrained model, with legacy fallback."""
+# Deployed forecast = logit blend of the constrained GAM (v7 champion-state
+# contract) and the legacy champscale model.  The weight was selected on the
+# chronological validation block (nested, test untouched) on 2026-08-29:
+# untouched-test game Brier 0.14179 vs 0.14247 for the GAM alone, paired
+# 95% interval -0.00125..-0.00011.  The selection curve is flat for
+# w_gam in 0.25..0.5, so a fixed weight is robust to redeployment drift.
+LIVE_BLEND_W_GAM = 0.45
+
+
+def predict_live(state, blue_champs=(), red_champs=(), path=LIVE_MODEL_PATH,
+                 blend=True):
+    """Deployed live score: GAM + legacy champscale logit blend.
+
+    Falls back to the GAM alone when the legacy artifact is missing, and to
+    the legacy model alone when the GAM artifact is missing.  The log-odds
+    breakdown fields always describe the GAM component.
+    """
+    gam_out = None
     if os.path.exists(path):
         try:
             with np.load(path, allow_pickle=False) as model:
                 kind = str(model["kind"].item()) if "kind" in model.files else ""
             if kind:
                 from . import wpgam
-                return wpgam.predict_live(state, blue_champs, red_champs, path)
+                gam_out = wpgam.predict_live(state, blue_champs, red_champs, path)
         except (KeyError, ValueError, OSError):
             if path != LEGACY_LIVE_MODEL_PATH:
                 raise
-    legacy = path if path != LIVE_MODEL_PATH else LEGACY_LIVE_MODEL_PATH
-    return _predict_live_legacy(state, blue_champs, red_champs, legacy)
+    if gam_out is None:
+        legacy = path if path != LIVE_MODEL_PATH else LEGACY_LIVE_MODEL_PATH
+        return _predict_live_legacy(state, blue_champs, red_champs, legacy)
+    if not blend or path != LIVE_MODEL_PATH or not os.path.exists(LEGACY_LIVE_MODEL_PATH):
+        return gam_out
+    legacy_out = _predict_live_legacy(state, blue_champs, red_champs)
+    clip = lambda p: min(1.0 - 1e-6, max(1e-6, float(p)))
+    logit = lambda p: math.log(clip(p) / (1.0 - clip(p)))
+    w = LIVE_BLEND_W_GAM
+    p = _sigmoid(w * logit(gam_out["p_blue"]) + (1.0 - w) * logit(legacy_out["p_blue"]))
+    out = dict(gam_out)
+    out.update({
+        "p_blue": round(float(p), 4),
+        "p_gam": gam_out["p_blue"], "p_legacy": legacy_out["p_blue"],
+        "blend_w_gam": w,
+        "unknown_champions": sorted(set(gam_out.get("unknown_champions") or [])
+                                    | set(legacy_out.get("unknown_champions") or [])),
+        "model_kind": "%s+champscale_w%.2f" % (gam_out.get("model_kind", ""), w),
+    })
+    return out

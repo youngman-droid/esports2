@@ -19,7 +19,7 @@ from . import config, wpbench, wpgam, wphist
 
 log = logging.getLogger("shadow")
 RESULT_PATH = os.path.join(wpgam.OUT_DIR, "shadow_score.json")
-PROTOCOL_VERSION = "shadow_v6_gg_prior_tempo"
+PROTOCOL_VERSION = "shadow_v7_champ_state"
 DEFAULT_INTERVAL_S = 15
 CONFIRMATORY_GAMES = 100
 _SCHEMA_READY = False
@@ -119,12 +119,12 @@ def _protocol_config():
         "historical_backfill": False,
         "sampling_unit": "first captured live frame per integer game minute",
         "sampling_cadence_s": DEFAULT_INTERVAL_S,
-        "forecast_inputs": "team ratings (OE and gol.gg Elo), draft, window-health deaths, stateful Baron/Elder timers, gold share, kill recency, and game state only; no quote from the current match",
+        "forecast_inputs": "team ratings (OE and gol.gg Elo), draft, champion-state scores, window-health deaths, stateful Baron/Elder timers, gold share, kill recency, and game state only; no quote from the current match",
         "historical_odds": "offline teacher input only; chronological holdout gate required for deployment",
         "market_price": "blue-oriented midpoint captured only as a comparison benchmark",
         "valid_market": "non-stale and non-settled quote",
         "primary_metric": "game-balanced Brier on identical independent-forecast/market rows",
-        "primary_comparison": "deployed historical-odds distillation (or standalone model) versus raw platform market",
+        "primary_comparison": "deployed forecast (constrained-GAM + champscale fixed-weight logit blend; standalone GAM when a component is missing) versus raw platform market",
         "uncertainty": "paired game-block bootstrap",
         "confirmatory_games_per_platform": CONFIRMATORY_GAMES,
         "confirmatory_freeze": "first score pass with 100 complete-case resolved games",
@@ -223,11 +223,18 @@ def _sha256(path):
 
 
 def _artifact_versions():
+    from . import wpx
     model_path = wpgam.MODEL_PATH
     blend_path = wphist.ARTIFACT_PATH
     out = {
         "model_kind": wpgam.MODEL_KIND,
         "model_sha256": _sha256(model_path),
+        # the deployed forecast is a fixed-weight logit blend with the legacy
+        # champscale artifact; freeze both component hashes on every forecast
+        "live_blend_w_gam": float(wpx.LIVE_BLEND_W_GAM),
+        "legacy_component_sha256": (_sha256(wpx.LEGACY_LIVE_MODEL_PATH)
+                                    if os.path.exists(wpx.LEGACY_LIVE_MODEL_PATH)
+                                    else None),
         "blend_kind": None,
         "blend_sha256": None,
     }
