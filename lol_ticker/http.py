@@ -36,8 +36,9 @@ class HttpError(Exception):
 _penalty = {}  # host -> current 429 cooldown seconds
 
 
-def _throttle(url):
-    host = urllib.parse.urlparse(url).netloc
+def _throttle(url, key=None):
+    """Space requests per host (or per explicit lane key); returns the key."""
+    host = key or urllib.parse.urlparse(url).netloc
     min_iv = config.MIN_INTERVAL.get(host, 0.1)
     with _slot_lock:
         now = time.monotonic()

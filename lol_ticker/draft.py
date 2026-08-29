@@ -13,6 +13,7 @@ Tables:
 import csv
 import logging
 import re
+import unicodedata
 import time
 from datetime import datetime, timezone
 
@@ -78,12 +79,20 @@ CREATE INDEX IF NOT EXISTS idx_dd_game ON draft_deltas (oe_game_id);
 """
 
 _SUFFIXES = {"esports", "esport", "e-sports", "gaming", "team", "club", "gg"}
+_TEAM_ALIASES = {
+    # The official schedule carries the current title sponsor, while both
+    # exchanges and most historical sources continue to use Team Liquid.
+    "liquid alienware": "liquid",
+}
 
 
 def norm_team(name):
-    words = re.sub(r"[^a-z0-9 ]", " ", (name or "").lower()).split()
+    # fold accents first: the esports schedule says "LEVIATÁN", the exchanges "Leviatan"
+    name = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode()
+    words = re.sub(r"[^a-z0-9 ]", " ", name.lower()).split()
     core = [w for w in words if w not in _SUFFIXES]
-    return " ".join(core or words)
+    normalized = " ".join(core or words)
+    return _TEAM_ALIASES.get(normalized, normalized)
 
 
 def ensure_schema(conn):
@@ -510,3 +519,159 @@ def model_patches(model):
     ps = {f.split("#", 1)[1] for f in model if "#" in f}
     return sorted(ps, key=lambda x: [int(t) if t.isdigit() else t for t in x.split(".")],
                   reverse=True)
+
+
+# ------------------------------------------ odds-free draft model (outcomes)
+
+OUTCOME_SCHEMA = """
+CREATE TABLE IF NOT EXISTS draft_outcome_model (
+    feature TEXT PRIMARY KEY, coef DOUBLE PRECISION, n INT
+);
+CREATE TABLE IF NOT EXISTS draft_outcome_meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS draft_outcome_games (
+    oe_game_id TEXT NOT NULL, team TEXT NOT NULL, opponent TEXT, league TEXT,
+    date_utc BIGINT, p_elo REAL, p_full REAL, edge REAL, won INT,
+    PRIMARY KEY (oe_game_id, team)
+);
+CREATE INDEX IF NOT EXISTS idx_dog_team ON draft_outcome_games (team);
+"""
+
+
+def _oe_elo(conn, k=30.0, base=1500.0):
+    """Sequential Elo over all OE games -> {game_id: (elo_blue, elo_red)} pre-game."""
+    rows = conn.execute("""SELECT game_id, blue_team, red_team, winner, date_utc FROM oe_games
+                           WHERE winner IS NOT NULL AND blue_team IS NOT NULL AND red_team IS NOT NULL
+                             AND date_utc IS NOT NULL ORDER BY date_utc, game_id""").fetchall()
+    r, out = {}, {}
+    for g in rows:
+        b, rd = r.get(g["blue_team"], base), r.get(g["red_team"], base)
+        out[g["game_id"]] = (b, rd)
+        eb = 1 / (1 + 10 ** ((rd - b) / 400))
+        sb = 1.0 if g["winner"] == g["blue_team"] else 0.0
+        r[g["blue_team"]] = b + k * (sb - eb)
+        r[g["red_team"]] = rd + k * ((1 - sb) - (1 - eb))
+    return out
+
+
+def fit_outcome_model(conn, lam=300.0, iters=400, lr=0.05, min_support=60,
+                      exclude=None, table="draft_outcome_games"):
+    """Logistic regression of 'blue won' on Elo prior + draft features, over
+    ALL Oracle's Elixir games (no market data).  Sparse gradient descent.
+    Stores coefficients, holdout metrics, and per-(game, team) draft edges:
+    edge = P(win | elo + draft) - P(win | elo)."""
+    import numpy as np
+    conn.execute(OUTCOME_SCHEMA)
+    conn.commit()
+    elo = _oe_elo(conn)
+    games = conn.execute("""
+        SELECT g.game_id, g.blue_team, g.red_team, g.winner, g.patch, g.league, g.date_utc,
+               (SELECT json_agg(json_build_array(champion, position)) FROM oe_picks p
+                 WHERE p.game_id = g.game_id AND p.team = g.blue_team) AS bp,
+               (SELECT json_agg(json_build_array(champion, position)) FROM oe_picks p
+                 WHERE p.game_id = g.game_id AND p.team = g.red_team) AS rp,
+               (SELECT array_agg(champion) FROM oe_bans b WHERE b.game_id = g.game_id AND b.team = g.blue_team) AS bb,
+               (SELECT array_agg(champion) FROM oe_bans b WHERE b.game_id = g.game_id AND b.team = g.red_team) AS rb
+        FROM oe_games g WHERE g.winner IS NOT NULL AND g.date_utc IS NOT NULL""").fetchall()
+    rows = []
+    for g in games:
+        if not g["bp"] or not g["rp"] or g["game_id"] not in elo:
+            continue
+        row = {"patch": g["patch"] or "",
+               "own_picks": sorted({c for c, _ in g["bp"]}), "enemy_picks": sorted({c for c, _ in g["rp"]}),
+               "own_roles": {c: (p or "") for c, p in g["bp"]}, "enemy_roles": {c: (p or "") for c, p in g["rp"]},
+               "own_bans": sorted(set(g["bb"] or [])), "enemy_bans": sorted(set(g["rb"] or []))}
+        eb, er = elo[g["game_id"]]
+        rows.append({"g": g, "feats": _features(row), "elo": (eb - er) / 400.0,
+                     "y": 1.0 if g["winner"] == g["blue_team"] else 0.0})
+    counts = {}
+    for r in rows:
+        for f in r["feats"]:
+            counts[f] = counts.get(f, 0) + 1
+    keep = sorted(f for f, n in counts.items() if n >= min_support or not _is_interaction(f))
+    idx = {f: i + 2 for i, f in enumerate(keep)}   # 0 = bias, 1 = elo_diff
+    nf = len(idx) + 2
+    ri, ci = [], []
+    for i, r in enumerate(rows):
+        ri += [i, i]; ci += [0, 1]
+        for f in r["feats"]:
+            j = idx.get(f)
+            if j is not None:
+                ri.append(i); ci.append(j)
+    ri = np.array(ri); ci = np.array(ci)
+    vals = np.ones(len(ri))
+    elo_v = np.array([r["elo"] for r in rows])
+    vals[ci == 1] = elo_v[ri[ci == 1]]
+    y = np.array([r["y"] for r in rows])
+    n = len(rows)
+    rng = np.random.default_rng(5)
+    te_mask = rng.random(n) < 0.2
+    # games to keep out of training entirely (their predictions are then
+    # out-of-sample, e.g. for use as a feature in downstream models)
+    excl = np.array([r["g"]["game_id"] in exclude for r in rows]) if exclude else np.zeros(n, dtype=bool)
+    te_mask = te_mask & ~excl
+
+    def predict(beta, mask=None):
+        z = np.bincount(ri, weights=vals * beta[ci], minlength=n)
+        return 1 / (1 + np.exp(-z))
+
+    def train(mask):
+        beta = np.zeros(nf)
+        reg = lam * np.ones(nf); reg[0] = 0.0; reg[1] = 0.0
+        m = mask.astype(float)
+        for _ in range(iters):
+            p = predict(beta)
+            resid = (p - y) * m
+            grad = np.bincount(ci, weights=vals * resid[ri], minlength=nf) + reg * beta
+            beta -= lr * grad / max(1.0, m.sum() / 50.0)
+        return beta
+
+    def logloss(p, yy):
+        p = np.clip(p, 1e-6, 1 - 1e-6)
+        return float(-np.mean(yy * np.log(p) + (1 - yy) * np.log(1 - p)))
+
+    beta_tr = train(~te_mask & ~excl)
+    p_te = predict(beta_tr)[te_mask]
+    ll_full = logloss(p_te, y[te_mask])
+    # elo-only baseline on the same split
+    beta_elo = np.zeros(nf)
+    for _ in range(iters):
+        p = predict(beta_elo); resid = (p - y) * (~te_mask & ~excl).astype(float)
+        grad = np.bincount(ci, weights=vals * resid[ri], minlength=nf)
+        grad[2:] = 0.0
+        beta_elo -= lr * grad / max(1.0, (~te_mask).sum() / 50.0)
+    ll_elo = logloss(predict(beta_elo)[te_mask], y[te_mask])
+    beta = train(~excl)
+    # per-game edges with the full model
+    p_full = predict(beta)
+    b_elo_only = beta.copy(); b_elo_only[2:] = 0.0
+    p_elo = predict(b_elo_only)
+    with conn.cursor() as cur:
+      if table == "draft_outcome_games":
+        cur.execute("DELETE FROM draft_outcome_model")
+        cur.executemany("INSERT INTO draft_outcome_model (feature, coef, n) VALUES (%s,%s,%s)",
+                        [("__bias__", float(beta[0]), n), ("__elo_diff__", float(beta[1]), n)] +
+                        [(f, float(beta[j]), counts[f]) for f, j in idx.items()], returning=False)
+        cur.execute("""INSERT INTO draft_outcome_meta (key, value) VALUES ('fit', %s)
+                       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""",
+                    (json.dumps({"games": n, "features": nf, "lambda": lam,
+                                 "holdout_logloss_full": round(ll_full, 4),
+                                 "holdout_logloss_elo_only": round(ll_elo, 4),
+                                 "fitted_at": int(time.time())}),))
+      cur.execute("CREATE TABLE IF NOT EXISTS %s (LIKE draft_outcome_games INCLUDING ALL)" % table)
+      cur.execute("DELETE FROM %s" % table)
+      if True:
+        out = []
+        for i, r in enumerate(rows):
+            g = r["g"]
+            pf, pe = float(p_full[i]), float(p_elo[i])
+            out.append((g["game_id"], g["blue_team"], g["red_team"], g["league"], g["date_utc"],
+                        pe, pf, pf - pe, int(r["y"])))
+            out.append((g["game_id"], g["red_team"], g["blue_team"], g["league"], g["date_utc"],
+                        1 - pe, 1 - pf, pe - pf, 1 - int(r["y"])))
+        cur.executemany("""INSERT INTO %s (oe_game_id, team, opponent, league,
+                           date_utc, p_elo, p_full, edge, won) VALUES (%%s,%%s,%%s,%%s,%%s,%%s,%%s,%%s,%%s)""" % table,
+                        out, returning=False)
+    conn.commit()
+    log.info("draft outcome model (%s): %d games (%d excluded from training), %d features, "
+             "holdout logloss full=%.4f elo-only=%.4f", table, n, int(excl.sum()), nf, ll_full, ll_elo)
+    return {"games": n, "features": nf, "ll_full": ll_full, "ll_elo": ll_elo}

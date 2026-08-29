@@ -5,7 +5,8 @@ Collects and stores ticker data for **League of Legends** markets on
 and keeps itself up to date as new games are played. Everything lands in
 **PostgreSQL + TimescaleDB** (database `league`), queryable per game.
 
-Python 3.9+, one dependency (`psycopg`). No API keys (all endpoints are public).
+Python 3.9+; install the dependencies in `requirements.txt`. No API keys are
+needed (all endpoints are public).
 
 ## Database setup (one-time)
 
@@ -59,13 +60,38 @@ python3 -m lol_ticker dashboard                  # local web UI at 127.0.0.1:809
 ## Dashboard
 
 `python3 -m lol_ticker dashboard` serves a single-page UI (localhost only).
-Search by team/date, click a game, tick markets to chart their odds over time
+A **Live game** panel at the top lists in-progress LoL Esports games (official
+schedule), polls the live-stats feed every 1–30 s (selectable), scores
+**every 1 Hz frame** the feed returns with the odds-free model (Elo prior looked
+up automatically) and shows the model's P(blue) next to the current Kalshi /
+Polymarket price for the same map (quotes refreshed every 5 s), with a
+zoomable running chart of model, state-only model, and both markets on the
+game clock, and a live scoreboard (team totals; per player: alive/dead, level,
+K/D/A, CS, gold, HP, items) — the same estimate as `python3 -m lol_ticker live`. The feed
+publishes one frame per second and lags the broadcast by ~1–3 min, so faster
+polling cannot add information.
+Player deaths are read from the window frame's `currentHealth` values (the
+details payload does not contain health). The panel prints those exact model
+inputs, their learned log-odds contribution, a late mass-death warning, and a
+same-frame scoreboard consistency alarm.
+A **Browse** picker below it (season → league → tournament → game, from the
+gol.gg tournament catalog; internationals/EMEA Masters under their own
+heading) lists each tournament's games; clicking a game loads its markets on
+both platforms into the odds chart (pre-ticking that map's winner markets) and
+its event timeline — and makes that game the page-wide context: a banner
+shows it, the draft simulator loads its real draft (bans/picks in competitive
+order, roles, patch, market pre-draft odds), the draft-analysis / event-impact /
+odds-free sections re-filter to its league with both teams highlighted, and
+the timeline and model-WP views switch to it. Reaching a game via search does
+the same. Or search by team/date, click a game, tick markets to chart their odds over time
 — Kalshi and Polymarket series can be overlaid on the same chart (solid line =
 price history, dashed = recorded L2 midpoint where available). The header pill
 shows live Kalshi trading status (red when the exchange is paused, refreshed
 every 60 s); exchange outages that overlap a game's window are shaded red on
 the chart and listed above it, and the green dashed vertical line marks
-scheduled game start.
+scheduled game start. Time-series charts (odds, timeline-vs-odds, model WP)
+zoom with the mouse wheel or by dragging a box, pan with shift+drag, and
+reset on double-click or the reset button.
 
 The **Calibration** section below the chart evaluates each platform against
 reality: every settled market contributes its last traded price before a
@@ -124,11 +150,251 @@ era and not at all across patches. Treat per-action estimates (typically
 re-rating is mostly about the specific teams, meta and execution, which
 champion-level features do not capture.
 
+## gol.gg detailed game data
+
+`python3 -m lol_ticker golgg` scrapes Games of Legends (gol.gg) for per-game
+detail well beyond Oracle's Elixir: the game header (teams, result, duration,
+patch, bans/picks, team kills/towers/dragons/barons/gold, first blood/pick,
+dragon types), 56 per-player stats (damage breakdown, gold/GPM, vision and
+wards, CS/GD/XPD@15, CC, healing/shielding, bounties…), the **full event
+timeline** (kills with shutdown bounties, plates, grubs, herald, dragons by
+type, atakhan, baron, towers by lane/tier, inhibitors, nexus), **per-minute
+gold and CS for every player**, and **item build timelines** (purchase /
+sell / undo / destroyed with in-game time) plus final loadout, summoner
+spells and runes. Item ids resolve via Riot Data Dragon (`--items`).
+
+Tables: `golgg_tournaments`, `golgg_matches`, `golgg_games`, `golgg_players`
+(with `stats` and `loadout` JSONB), `golgg_events`, `golgg_timeline`,
+`golgg_builds`, `golgg_items`. Scope flags: `--seasons S15,S16`,
+`--regions major` (or a comma list of gol.gg region codes), `--since
+YYYY-MM-DD`, `--tournament <substring>`, `--limit N`, `--no-builds`.
+The scraper is polite (gzip; 0.5 s spacing for the ~600 KB pages and a
+0.15 s lane for the ~2 KB per-player build calls, shared across workers;
+descriptive UA; robots.txt-compliant) and resumable — rerun to pick up new
+games. Throughput is ~1,000+ games/hour with the default 6 workers; run it
+detached, `tail -f data/golgg.log`, or `python3 -m lol_ticker golgg --status`.
+
+### Game timeline vs odds, event impact, pauses
+
+`python3 -m lol_ticker align` links scraped gol.gg games to Oracle's Elixir
+games (teams + date + game number) and, for every per-map winner market of a
+linked game, aligns the in-game clock with wall clock: starting from the OE
+game-start time, each significant event (kills, objectives, towers) is
+anchored to the nearest odds jump (trade tape + 1-min series + L2 mids); the
+running residual's baseline is the market's reaction lag, a persistent step
+above it is a **pause**, and the market's terminal 0.99/0.01 move fixes the
+end and sanity-checks total paused time. Results land in `game_alignment`
+(start/end wall time, pauses, anchoring quality) and `event_odds` (every
+event with wall time, odds before/after, Δ for the market's team and the
+swing toward the acting side). Selecting a game in the dashboard links and
+aligns it on demand (markets are resolved straight from the catalog by teams +
+map number + start window), so freshly scraped games work without waiting for
+a bulk `align` run; games whose map had no market (e.g. an unlisted game 3)
+show an explicit "no odds series" note instead of a stale chart.
+
+The dashboard's **Game timeline vs odds** section charts a game's odds with
+event markers (hover for the event and its swing), pause bands and start/end
+lines, plus the event table; **Event impact** aggregates mean/median swing
+toward the acting side per event type with platform / phase / league filters.
+Caveat: events seconds apart (teamfights) share one odds window, so per-event
+swings in clusters are not independent. A **market swing vs outcome-model
+WPA** bar chart and table (`/api/impact/compare`) put the two side by side per
+event type with the same filters, plus the market/model ratio — the direct
+test of whether traders under- or over-react to each kind of event.
+
+### Odds-free evaluation
+
+Two outcome-based models evaluate drafts and events without any market data
+(`lol_ticker/wpa.py`, `draft.fit_outcome_model`):
+
+- `python3 -m lol_ticker wpa` — sequential **Elo** over gol.gg games, then an
+  in-game **win-probability model** (logistic on gold / kill / tower / dragon /
+  baron / inhib / herald / grub / atakhan / plate diffs, game time, side, Elo
+  prior; states sampled every minute and at every event; game-level holdout
+  log-loss ≈ 0.47 vs 0.68 baseline, ~77% accuracy), then per-event **WPA** =
+  WP after − WP before (`event_wpa`). The dashboard shows a game's model WP
+  curve on the in-game clock and a WPA-by-event-type table.
+  A **calibration** panel refits the model on 80% of games and scores the
+  rest (reliability bins, Brier, log-loss, by phase), and — the like-for-like
+  test — evaluates the market's odds and the model's WP at the *same event
+  instants* in aligned games (`/api/wpa/calibration`). Result so far: the
+  model is well calibrated (holdout Brier ≈ 0.15 over all states) but the
+  market is clearly sharper at identical moments (Brier ≈ 0.11 vs ≈ 0.13,
+  log-loss ≈ 0.34 vs ≈ 0.39 on both platforms).
+- `python3 -m lol_ticker wpx all` — **model exploration and production fit**
+  (`lol_ticker/wpx.py`, `lol_ticker/wpgam.py`):
+  builds a state dataset (per-role gold, CS, momentum, item completion and
+  item gold, objective/structure state, players on respawn timers, baron/elder
+  buffs, objective timers; priors: sequential team Elo and player ratings over
+  all OE games, recent form, margin-RAPM team/player ratings refit monthly on
+  earlier games, a leak-free draft-model term) and evaluates a model zoo with
+  5-fold game-level CV against the market at the same points, plus a fixed
+  minute-mark comparison (`wpx_fair.py`). The production model is now a
+  two-stage, shape-constrained, time-varying logistic GAM: a one-row-per-game
+  pregame prior (live-available team/player ratings plus strongly shrunk
+  champion effects), followed by five smooth game-time knots over a small
+  historical/live feature contract. Gold, momentum, CS, objectives, living
+  players, HP and level advantages are constrained to have
+  non-negative partial effects at every knot. Inputs are standardized, games
+  are balanced in the loss, only causal fixed-minute states are fitted, and an
+  earlier-date holdout calibrates the final logits. `wpx gam-eval` evaluates
+  the newest 20% of games and reports state- and game-weighted scores with
+  game-block bootstrap intervals; `wpx fit` writes the versioned live artifact.
+  `wpx bench` performs a nested chronological comparison of additive ridge
+  logistic regression, unconstrained and constrained time-varying GAMs,
+  histogram gradient boosting, monotone histogram boosting, and validation-fit
+  convex ensembles. Hyperparameters and blend weights use a middle date block;
+  the newest test block is untouched until final scoring.
+
+  The v5 live contract models teamfights with the linear death advantage,
+  signed squared death advantage, individual side death-count curvature, and
+  an interaction between deaths and opened-base pressure. Historical death
+  counts are capped to the physical 0–5 range, and every term is constructed
+  from fields also available in the live window feed. This fixes the former
+  additive-model failure where four dead players could be treated too much
+  like one or two deaths, without introducing a hard probability override.
+  It also tracks each side's Baron and Elder timers from their cumulative
+  counter transitions: respectively 180 and 150 seconds at acquisition,
+  pause-aware countdowns, and active exactly while the corresponding timer is
+  positive. The matching historical `baron_active` and `elder_buff` terms are
+  part of the fitted feature contract. Soul requires four non-Elder dragons;
+  Elder kills are tracked separately and cannot accidentally satisfy Soul.
+
+  On the current causal rebuild (15,263 games), the strict newest-date holdout
+  is 3,064 games. The constrained GAM wins with game-weighted Brier 0.14386
+  (95% game-block interval 0.13905–0.14917), state-weighted Brier 0.15483, and
+  state log-loss 0.46564, versus 0.21301 / 0.62702 for its pregame-only prior.
+  Removing the shape constraints changes game-Brier by only +0.00001 (paired
+  interval includes zero); monotone boosting is +0.00200 worse and ridge is
+  +0.00283 worse, with both paired intervals excluding zero. Neither convex
+  ensemble improves on the constrained GAM. The older market-aligned model zoo
+  remains as a research benchmark. On event-aligned points inside the same
+  newest-date test block, the constrained GAM scores state Brier 0.11813 versus
+  Polymarket's 0.11220, and 0.12182 versus Kalshi's 0.11416; these
+  event-triggered samples favour the markets and are reported separately from
+  fixed-minute accuracy.
+
+  `python3 -m lol_ticker wpx blend` tests probability-space and log-odds
+  averages, market recalibration, positive logistic stacking and time-varying
+  blends with nested chronological selection (`lol_ticker/wpblend.py`). At
+  event instants, the selected positive logit stack lowers game-weighted Brier
+  from 0.10572 (Polymarket) and 0.10892 (model) to 0.09360 over 1,866 untouched
+  games; against Kalshi it lowers 0.10974 / 0.11450 to 0.09783 over 420 games.
+  The paired improvements over the markets are 0.01212 (95% game-block interval
+  0.00995–0.01435) and 0.01191 (0.00644–0.01752), respectively.
+
+  The retrospective latency benchmark is `python3 -m lol_ticker wpx blend-live --lead 45`:
+  every causal fixed-minute model state is paired with the last executable quote
+  45 seconds later. Polymarket selects a direct-Brier positive logit stack,
+  `logit(p) = b₀ + b_market logit(p_market) + b_model logit(p_model)`; it scores 0.14282 versus
+  0.15069 for the market and 0.14840 for the model over 1,591 test games.
+  Kalshi selects a static positive logit stack and scores 0.13861 versus
+  0.14850 / 0.14563 over 344 games. Both improvements over the market have
+  paired intervals excluding zero. Repeating the full selection at 30 and 60
+  seconds gives the same conclusion. When both exchanges are present at +45 s,
+  Kalshi's two-way stack has the best game-weighted Brier (0.14296); the
+  three-way stack is only 0.00013 worse and its paired interval crosses zero,
+  so that experiment selected the simpler Kalshi/model blend. These results
+  are retained for research under `data/wpx/blend_*.json`, but current-match
+  exchange quotes are not forecast inputs and this artifact is not deployed.
+
+  Draft-complete probabilities use a separate fit rather than extrapolating
+  the in-game coefficients to time zero. The causal `t=0` model is compared
+  with the stored post-draft quote at game start +2 minutes (so the market is
+  explicitly given 120 seconds of early-game information). Polymarket's logit
+  stack scores 0.19655 versus 0.20124 for the market and 0.20451 for the model
+  over 1,866 test games; its paired market-minus-blend interval is
+  0.00247–0.00692. Kalshi selects market-only Platt recalibration, scoring
+  0.20396 versus 0.21021 for raw market and 0.21767 for the model over 420
+  games (paired interval 0.00066–0.01195). In other words, the odds-free model
+  adds post-draft information to Polymarket on this cohort, but not to Kalshi.
+  This remains a retrospective comparison rather than a deployed live input.
+
+  `python3 -m lol_ticker wpx hist-blend` implements the deployable,
+  exchange-independent alternative (`lol_ticker/wphist.py`). A constrained
+  teacher learns from historical Polymarket/Kalshi probabilities, while live
+  inference accepts only the outcome GAM probability and its underlying
+  team/draft/game-state features. A middle date block selects the historical
+  teacher's log-odds weight and the newest 20% of games is an untouched
+  deployment gate. On the current rebuild, the standalone GAM scores
+  game-balanced Brier 0.143818 versus 0.143942 for the historical blend
+  (blend-minus-model +0.000124, 95% paired interval -0.000067..+0.000324), so
+  the historical blend is rejected and the standalone GAM remains deployed.
+
+### Prospective shadow scoring
+
+`python3 -m lol_ticker shadow record` runs the forward-only evaluator
+(`lol_ticker/shadow.py`). The first live model frame observed in each integer
+game minute is written together with contemporaneous blue-oriented market
+midpoints used strictly as comparison benchmarks, the independently generated
+historical blend when its holdout gate passes, exact feed-to-quote lag, side
+assignment, and SHA-256 hashes of deployed artifacts. A database trigger rejects
+updates or deletes, while the primary key admits only one row for that game
+minute: missing or stale quotes remain missing and historical games are never
+backfilled. Outcomes are written later to a separate table; remade attempts
+are voided.
+
+The protocol is content-addressed and registered before the first prediction.
+The active-objective correction starts a fresh `shadow_v5_active_objectives`
+ledger; all v2–v4 forecasts remain immutable and queryable.
+Its primary metric is game-balanced Brier for the deployed independent
+forecast versus the raw market on the same `(game, minute)` rows, with a paired
+game-block bootstrap interval. Runs
+before 100 resolved games per platform are labeled descriptive, avoiding a
+confirmatory claim from repeated early peeking. Model refreshes are allowed,
+but every forecast retains the exact artifact versions that generated it.
+
+```bash
+python3 -m lol_ticker shadow record --once  # initialize + one live capture pass
+python3 -m lol_ticker shadow status
+python3 -m lol_ticker shadow resolve        # attach newly available OE/gol.gg outcomes
+python3 -m lol_ticker shadow score          # data/wpx/shadow_score.json
+```
+
+For a result that cannot yet be matched automatically, use
+`shadow resolve --game-id ID --winner blue|red`; manual provenance is stored
+with the outcome.
+The normal `scripts/update.sh` workflow starts the continuous shadow recorder,
+and the dashboard's **Prospective shadow** button shows capture progress and
+scores without refitting the blend.
+
+  Earlier exploratory findings (Aug 2026, 3.4k–4.8k games):
+  event-instant scoring favours the market because events are anchored to its
+  own odds jumps; at equal wall time on fixed minute marks the best odds-free
+  model (time-interacted logistic + ridge champion-scaling terms) beats both
+  markets** — Polymarket 0.1678 vs 0.1703, Kalshi 0.1587 vs 0.1607 — winning
+  mid and late game; with the market given 45 s of reaction time it still
+  leads by ~0.002–0.003. This is a retrospective state-quality comparison: the
+  live feed is delayed, so it is not evidence of a contemporaneous trading
+  edge. Gradient boosting underperformed the logistic family
+  throughout (game-correlated states). Results render in the dashboard's
+  "Odds-free model zoo vs the markets" panel (`data/wpx/results.json`).
+- `python3 -m lol_ticker draftfree` — logistic regression of who won on an Elo
+  prior plus the same draft features (picks/bans/roles/patch/pairs) over all
+  Oracle's Elixir games (sparse gradient descent, λ=300, interaction support
+  ≥60). Holdout log-loss improves over Elo-only (≈0.628 vs 0.634), so drafts
+  carry real, if modest, outcome signal. Per-(game, team) **draft edge** =
+  P(win | Elo + draft) − P(win | Elo) lands in `draft_outcome_games`; the
+  dashboard ranks teams and champion effects from it, next to the
+  market-based tables for cross-checking.
+
 `game`/`export` terms match team names, event ids, or market titles; a
 `YYYY-MM-DD` term filters by game day (UTC). Export writes one directory per
 (platform, event) with `markets.csv`, `book_snapshots.csv`, `trades.csv`,
 `candles.csv`, `price_points.csv`, and `outages.csv` when an exchange pause
 overlapped the game.
+
+## One-shot refresh
+
+`sh scripts/update.sh` brings everything current in one go (logs in
+`data/update*.log`): discovers new markets and backfills newly settled ones,
+re-downloads the current Oracle's Elixir CSV and rebuilds the draft tables,
+runs the gol.gg scrape incrementally for the last three weeks, then re-aligns
+timelines with odds, refits the odds-free WP/WPA and draft outcome models,
+rebuilds the exploration dataset and the live model, and starts the `record`
+daemon if it isn't running (`--no-record` to skip that). `python3 -m
+lol_ticker live` then estimates the in-progress LoL Esports game from the
+official live-stats feed.
 
 ## Keeping it updated as new games are played
 

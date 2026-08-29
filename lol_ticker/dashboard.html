@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <title>LoL Ticker</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
 <style>
   body { font-family: -apple-system, Helvetica, Arial, sans-serif; margin: 20px auto;
          max-width: 1100px; color: #222; }
@@ -30,8 +32,35 @@
 </head>
 <body>
 <h1>LoL Ticker</h1><span id="kstatus" class="unk">kalshi: ?</span>
+<div style="margin-top:12px;padding:8px 10px;border:1px solid #ddd;border-radius:6px">
+  <b style="font-size:13px">Browse</b>
+  <select id="pk-season"></select>
+  <select id="pk-league"></select>
+  <select id="pk-tr" style="max-width:380px"></select>
+  <span id="pk-meta" class="muted"></span>
+  <div id="pk-games" style="max-height:260px;overflow-y:auto;margin-top:6px"></div>
+  <div id="sel-banner" style="display:none;margin-top:8px;padding:6px 10px;background:#eef3ff;border-left:3px solid #1652f0;font-size:13px"></div>
+</div>
+
+<div style="margin-top:12px;padding:8px 10px;border:1px solid #ddd;border-radius:6px">
+  <b style="font-size:13px">Live game</b>
+  <select id="lv-game"><option value="">(checking LoL Esports schedule…)</option></select>
+  <button onclick="lvRefresh()">Refresh</button>
+  <label style="margin-left:8px;font-size:12px"><input type="checkbox" id="lv-auto" checked> auto every
+    <select id="lv-int"><option value="1000">1 s</option><option value="2000" selected>2 s</option><option value="5000">5 s</option><option value="30000">30 s</option></select>
+    (feed is 1 frame/s; quotes every 5 s)</label>
+  <span class="muted" style="margin-left:8px">chart: wheel / drag-box zoom, shift+drag pan, double-click or <button onclick="resetZoom(lvChart)" style="font-size:12px;padding:2px 8px">reset</button></span>
+  <span id="lv-meta" class="muted" style="margin-left:8px"></span>
+  <div id="lv-box" style="display:none;margin-top:6px">
+    <div id="lv-line" style="font-size:14px"></div>
+    <div id="lv-state" class="muted" style="margin-top:4px"></div>
+    <div style="position:relative;height:160px;margin-top:6px"><canvas id="lvchart"></canvas></div>
+    <div id="lv-totals" style="font-size:13px;margin-top:8px"></div>
+    <div class="cols" style="margin-top:4px"><div id="lv-sb-blue"></div><div id="lv-sb-red"></div></div>
+  </div>
+</div>
 <div style="margin-top:12px">
-  <input id="q" type="text" placeholder="team / date, e.g. LNG 2026-08-09" autofocus>
+  <input id="q" type="text" placeholder="or search: team / date, e.g. LNG 2026-08-09">
   <button onclick="search()">Search</button>
   <button onclick="clearChart()">Clear chart</button>
   <span class="muted">click a game, tick markets to chart; both platforms can share one chart</span>
@@ -46,6 +75,7 @@
     <div id="markets" style="display:none"></div>
   </div>
 </div>
+<div class="muted" style="margin-top:6px">zoom: mouse wheel · drag a box · shift+drag to pan · double-click or <button onclick="resetZoom(chart)" style="font-size:12px;padding:2px 8px">reset</button></div>
 <div id="chartbox"><canvas id="chart"></canvas></div>
 
 <h2 style="font-size:17px;margin-top:28px">Calibration</h2>
@@ -108,6 +138,109 @@ read of the draft). Games covered by both platforms count once.</p>
 </div>
 
 
+<h2 style="font-size:17px;margin-top:28px">Game timeline vs odds</h2>
+<p class="muted">gol.gg in-game events aligned to the market's odds. Alignment anchors each
+significant event (kills, objectives, towers) to the nearest odds jump; a persistent step in the
+clock offset is a detected <b>pause</b> (shaded grey), and the solid vertical lines mark inferred game
+start and end. Hover a marker for the event and its odds swing. The table below lists every event with
+Δ odds for the market's team and the swing toward the acting side.</p>
+<div style="margin-bottom:8px">
+  <select id="al-game" style="max-width:560px"></select>
+  <button onclick="alLoadList()">Refresh list</button>
+  <span id="al-meta" class="muted" style="margin-left:8px"></span>
+</div>
+<div class="muted">zoom: wheel · drag box · shift+drag pan · double-click or <button onclick="resetZoom(alChart)" style="font-size:12px;padding:2px 8px">reset</button></div>
+<div id="albox" style="position:relative;height:400px"><canvas id="alchart"></canvas></div>
+<div id="al-events" style="max-height:320px;overflow-y:auto;margin-top:8px"></div>
+
+<h3 style="font-size:15px;margin-top:22px">Event impact (odds swing toward the acting side)</h3>
+<div>
+  <label>platform <select id="im-plat"><option value="">both</option>
+    <option value="kalshi">kalshi</option><option value="polymarket">polymarket</option></select></label>
+  <label>phase <select id="im-phase"><option value="">all</option>
+    <option value="early">early (&lt;15m)</option><option value="mid">mid (15–25m)</option>
+    <option value="late">late (&gt;25m)</option></select></label>
+  <input id="im-league" type="text" placeholder="league/tournament filter" style="width:180px">
+  <label>min n <input id="im-minn" type="number" value="5" style="width:56px"></label>
+  <button onclick="eventImpact()">Compute</button>
+</div>
+<div id="im-table"></div>
+<h3 style="font-size:15px;margin-top:22px">Market swing vs outcome-model WPA, per event type</h3>
+<p class="muted">Same filters as above. Bars: the market's observed odds swing toward the acting side
+(from aligned games) next to the odds-free model's Win Probability Added for the same event type.
+Where the market bar is much shorter than the model bar, traders move less than outcomes say the
+event is worth (or the model over-credits it — e.g. gold from the play lands in the same window).</p>
+<div style="position:relative;height:360px"><canvas id="cmpchart"></canvas></div>
+<div id="cmp-table"></div>
+
+<h2 style="font-size:17px;margin-top:28px">Odds-free evaluation (outcome models)</h2>
+<p class="muted">No market data here. <b>Event WPA</b>: an in-game win-probability model fitted on
+gol.gg game states (gold / kill / tower / dragon / baron / inhib / herald / grub / atakhan / plate
+diffs, game time, side, Elo prior) against who actually won; each event's value is model WP after
+minus before. <b>Draft (outcome model)</b>: logistic regression of who won on an Elo prior plus draft
+features over all Oracle's Elixir games; a team's draft edge is how much its drafts move model win
+probability beyond team strength. Both sit next to the market-based numbers above for cross-checking.</p>
+<div class="cols">
+  <div>
+    <h3 style="font-size:14px">Model win probability for the selected game</h3>
+    <div id="wp-meta" class="muted"></div>
+    <div class="muted">zoom: wheel · drag box · shift+drag pan · double-click or <button onclick="resetZoom(wpChart)" style="font-size:12px;padding:2px 8px">reset</button></div>
+    <div style="position:relative;height:300px"><canvas id="wpchart"></canvas></div>
+  </div>
+  <div>
+    <h3 style="font-size:14px">Event WPA by type</h3>
+    <div>
+      <label>phase <select id="wp-phase"><option value="">all</option><option value="early">early</option>
+        <option value="mid">mid</option><option value="late">late</option></select></label>
+      <input id="wp-league" type="text" placeholder="league filter" style="width:140px">
+      <button onclick="wpImpact()">Compute</button>
+    </div>
+    <div id="wp-table"></div>
+  </div>
+</div>
+
+<div class="cols" style="margin-top:14px">
+  <div>
+    <h3 style="font-size:14px">Model calibration (held-out games) &amp; accuracy vs the market</h3>
+    <p class="muted">Left: reliability of the outcome model on states from 20% held-out games (refit on
+    the rest). Right: on aligned games, the market's odds and the model's WP are both evaluated at the
+    <b>same event instants</b> against the same outcomes — a like-for-like accuracy test per platform.</p>
+    <button onclick="wpCalibration()">Compute</button> <span id="wpc-stats" class="muted"></span>
+    <div style="position:relative;height:380px"><canvas id="wpcchart"></canvas></div>
+    <div id="wpc-table"></div>
+  </div>
+</div>
+<div style="margin-top:14px">
+  <h3 style="font-size:14px">Odds-free model zoo vs the markets</h3>
+  <p class="muted">Out-of-sample (5-fold by game) Brier of alternative odds-free models. <b>@PM / @KS</b> columns score
+  at event instants, which favour the market (events are anchored to its own odds jumps). The <b>fair</b> block
+  scores market and model at fixed minute marks mapped through the alignment clock. Because historical state is
+  available retrospectively, the zero-lag row is an optimistic state-quality comparison, not a deployable latency
+  claim; the +45 s row is closer to the live feed's minimum availability delay. Lower is better.</p>
+  <button onclick="wpxResults()">Load</button>
+  <button onclick="shadowResults()">Prospective shadow</button>
+  <span id="shadow-stats" class="muted"></span>
+  <div id="shadow-table" style="margin:8px 0"></div>
+  <div id="wpx-blends" style="margin:8px 0"></div>
+  <div id="wpx-methods" style="margin:8px 0"></div>
+  <div id="wpx-gam" style="margin:8px 0"></div>
+  <div id="wpx-table"></div>
+  <div id="wpx-fair" style="margin-top:8px"></div>
+</div>
+<div class="cols" style="margin-top:14px">
+  <div>
+    <h3 style="font-size:14px">Teams by draft edge (outcome model)</h3>
+    <div><input id="df-league" type="text" placeholder="leagues, e.g. LCK, LPL" style="width:200px">
+      <label>min games <input id="df-minn" type="number" value="15" style="width:56px"></label>
+      <button onclick="draftFree()">Compute</button> <span id="df-meta" class="muted"></span></div>
+    <div id="df-teams"></div>
+  </div>
+  <div>
+    <h3 style="font-size:14px">Champion effects (outcome model, picked)</h3>
+    <div id="df-champs"></div>
+  </div>
+</div>
+
 <h2 style="font-size:17px;margin-top:28px">Draft simulator</h2>
 <p class="muted">Walks the competitive draft order (3+3 bans, 6 picks, 2+2 bans, 4 picks).
 Each action's effect is estimated by a ridge model fit on the market's post-draft re-rating
@@ -133,6 +266,20 @@ training data (no effect).</p>
 <div id="sim-log" class="muted" style="margin-top:10px;font-size:12px"></div>
 
 <script>
+// shared zoom/pan behaviour (chartjs-plugin-zoom): wheel zoom, drag-box zoom,
+// shift+drag pan, double-click reset
+const ZOOM_OPTS = {
+  zoom: {wheel: {enabled: true, speed: 0.15}, pinch: {enabled: true},
+         drag: {enabled: true, backgroundColor: 'rgba(22,82,240,0.12)', borderColor: '#1652f0', borderWidth: 1},
+         mode: 'x'},
+  pan: {enabled: true, mode: 'x', modifierKey: 'shift'},
+  limits: {y: {min: 0, max: 1}},
+};
+function resetZoom(c){ if (c && c.resetZoom) c.resetZoom(); }
+function wireDblClick(canvasId, getChart){
+  const cv = document.getElementById(canvasId);
+  if (cv && !cv._dblWired){ cv._dblWired = true; cv.addEventListener('dblclick', () => resetZoom(getChart())); }
+}
 const COLORS = ['#1652f0','#0aa574','#d33','#e08b00','#7b3ff2','#0aa5a5',
                 '#b0187b','#5b7a1e','#444','#888'];
 let chart = null, colorIdx = 0, curGame = null, outageSpans = [], gameStart = null;
@@ -190,7 +337,13 @@ async function search(){
     const flag = el('td');
     if (g.outage_affected) flag.appendChild(el('span', {class: 'badge'}, 'outage'));
     tr.appendChild(flag);
-    tr.addEventListener('click', () => openGame(g.platform, g.event_id));
+    tr.addEventListener('click', async () => {
+      await openGame(g.platform, g.event_id);
+      try {
+        const gg = await getJSON(`/api/picker/resolve?platform=${g.platform}&event_id=${encodeURIComponent(g.event_id)}`);
+        if (gg.length) await selectGame(gg[0].game_id);
+      } catch (e) {}
+    });
     table.appendChild(tr);
   }
   res.appendChild(table);
@@ -267,12 +420,14 @@ function ensureChart(){
       },
       plugins: {
         legend: {position: 'bottom', labels: {boxWidth: 12, font: {size: 11}}},
-        tooltip: {callbacks: {title: items => fmtT(items[0].parsed.x)}}
+        tooltip: {callbacks: {title: items => fmtT(items[0].parsed.x)}},
+        zoom: ZOOM_OPTS
       },
       elements: {point: {radius: 0}, line: {borderWidth: 1.5}}
     },
     plugins: [shade]
   });
+  wireDblClick('chart', () => chart);
   return chart;
 }
 
@@ -381,6 +536,737 @@ function simReset(){ simActions = simOrder.map(() => ''); simRoles = simOrder.ma
 document.getElementById('sim-pre').addEventListener('change', simRun);
 simInit().catch(e => { document.getElementById('sim-meta').textContent = 'simulator unavailable: ' + e; });
 
+
+// ------------------------------------------------------- timeline alignment
+let alChart = null;
+const EVT_COLOR = {kill:'#d33', baron:'#7b3ff2', herald:'#e08b00', atakhan:'#b0187b',
+  tower:'#0aa5a5', inhib:'#444', nexus:'#000', grubs:'#5b7a1e', plate:'#aaa'};
+const evColor = a => a && a.startsWith('dragon') ? '#e08b00' : (EVT_COLOR[a] || '#888');
+async function alLoadList(){
+  const games = await getJSON('/api/align/games');
+  const sel = document.getElementById('al-game');
+  sel.innerHTML = '';
+  if (!games.length){ sel.appendChild(el('option', {}, 'no aligned games yet (run: python3 -m lol_ticker align)')); return; }
+  games.forEach(g => {
+    const o = el('option', {value: JSON.stringify([g.game_id, g.platform, g.market_id])},
+      `${g.date} G${g.game_num} ${g.blue_team} vs ${g.red_team} — ${g.platform} (${g.team}) q=${g.quality ?? '?'}${g.n_pauses ? ' ⏸' + g.n_pauses : ''}`);
+    sel.appendChild(o);
+  });
+  sel.onchange = alShow;
+  alShow();
+}
+async function alShow(){
+  const v = document.getElementById('al-game').value;
+  if (!v || v[0] !== '[') return;
+  const [gid, plat, mid] = JSON.parse(v);
+  wpShow(gid).catch(() => {});
+  const a = await getJSON(`/api/align/game?game_id=${gid}&platform=${plat}&market_id=${encodeURIComponent(mid)}`);
+  if (a.error){ document.getElementById('al-meta').textContent = a.error; return; }
+  const wall = a.end_wall - a.start_wall;
+  document.getElementById('al-meta').textContent =
+    `${a.team} (${a.team_side}) · start ${fmtT(a.start_wall)} · end ${fmtT(a.end_wall)} · game ${Math.floor(a.duration_s/60)}:${String(a.duration_s%60).padStart(2,'0')} vs wall ${Math.floor(wall/60)}:${String(wall%60).padStart(2,'0')} · matched ${a.n_matched} events (q=${a.quality}) · pauses: ${a.pauses.length ? a.pauses.map(p => Math.floor(p.game_time_s/60)+'m +'+p.length_s+'s').join(', ') : 'none'}`;
+  const bands = {id:'albands', beforeDraw(c){
+    const {ctx, chartArea: ca, scales} = c; if (!ca) return; ctx.save();
+    ctx.fillStyle = 'rgba(120,120,120,0.18)';
+    for (const p of a.pauses){ const x1 = scales.x.getPixelForValue(p.wall_ts), x2 = scales.x.getPixelForValue(p.wall_ts + p.length_s);
+      ctx.fillRect(Math.max(x1, ca.left), ca.top, Math.max(2, Math.min(x2, ca.right) - Math.max(x1, ca.left)), ca.bottom - ca.top); }
+    ctx.strokeStyle = 'rgba(0,140,0,0.7)'; ctx.setLineDash([]);
+    for (const x of [a.start_wall, a.end_wall]){ const px = scales.x.getPixelForValue(x);
+      if (px >= ca.left && px <= ca.right){ ctx.beginPath(); ctx.moveTo(px, ca.top); ctx.lineTo(px, ca.bottom); ctx.stroke(); } }
+    ctx.restore(); }};
+  const evs = a.events.filter(e => e.action !== 'plate' && e.p_after != null);
+  if (alChart) alChart.destroy();
+  alChart = new Chart(document.getElementById('alchart'), {
+    type: 'line',
+    data: {datasets: [
+      {label: `${a.team} odds`, data: a.series.map(([t,p]) => ({x:t, y:p})), borderColor: plat === 'kalshi' ? '#0aa574' : '#1652f0',
+       borderWidth: 1.5, pointRadius: 0, parsing: false, normalized: true, order: 2},
+      {label: 'events', type: 'scatter', data: evs.map(e => ({x: e.wall_ts, y: e.p_after, e})),
+       pointBackgroundColor: evs.map(e => evColor(e.action)), pointBorderColor: '#fff', pointBorderWidth: 1,
+       pointRadius: evs.map(e => e.action === 'kill' ? 4 : 6), parsing: false, order: 1},
+    ]},
+    options: {animation: false, responsive: true, maintainAspectRatio: false,
+      scales: {x: {type: 'linear', min: a.start_wall - 600, max: a.end_wall + 300, ticks: {callback: v => fmtT(v).slice(11)}},
+               y: {min: 0, max: 1, title: {display: true, text: a.team + ' win odds'}}},
+      plugins: {legend: {display: false}, zoom: ZOOM_OPTS, tooltip: {callbacks: {
+        title: items => fmtT(items[0].parsed.x),
+        label: c => { const e = c.raw.e; if (!e) return 'odds ' + c.parsed.y;
+          const gt = Math.floor(e.time_s/60)+':'+String(e.time_s%60).padStart(2,'0');
+          return `${gt} ${e.side||''} ${e.action}${e.player ? ' '+e.player : ''}${e.target ? ' → '+e.target : ''} | Δ ${pp(e.dp)} pp${e.matched ? ' (anchored)' : ''}`; }}}}},
+    plugins: [bands]});
+  wireDblClick('alchart', () => alChart);
+  // events table
+  const box = document.getElementById('al-events'); box.innerHTML = '';
+  const table = el('table'); const hdr = el('tr');
+  ['game time','wall (UTC)','side','event','who → what','odds before → after','Δ team','swing to actor','anchored'].forEach(h => hdr.appendChild(el('th', {}, h)));
+  table.appendChild(hdr);
+  for (const e of a.events){
+    if (e.action === 'plate') continue;
+    const tr = el('tr');
+    tr.appendChild(el('td', {}, Math.floor(e.time_s/60)+':'+String(e.time_s%60).padStart(2,'0')));
+    tr.appendChild(el('td', {class:'muted'}, fmtT(e.wall_ts).slice(11)));
+    tr.appendChild(el('td', {}, e.side || ''));
+    const at = el('td', {}, e.action); at.style.color = evColor(e.action); tr.appendChild(at);
+    tr.appendChild(el('td', {}, (e.player || '') + (e.target ? ' → ' + e.target : '')));
+    tr.appendChild(el('td', {}, e.p_before != null ? `${(e.p_before*100).toFixed(1)} → ${(e.p_after*100).toFixed(1)}%` : ''));
+    const d1 = el('td', {}, e.dp != null ? pp(e.dp) : ''); d1.style.color = e.dp > 0 ? '#0a7a44' : (e.dp < 0 ? '#c22' : '');
+    const d2 = el('td', {}, e.dp_actor != null ? pp(e.dp_actor) : ''); d2.style.color = e.dp_actor > 0 ? '#0a7a44' : (e.dp_actor < 0 ? '#c22' : '');
+    tr.appendChild(d1); tr.appendChild(d2);
+    tr.appendChild(el('td', {class:'muted'}, e.matched ? '✓' : ''));
+    table.appendChild(tr);
+  }
+  box.appendChild(table);
+}
+let cmpChart = null;
+async function impactCompare(q){
+  const rows = await getJSON('/api/impact/compare?' + q);
+  const labels = rows.map(r => r.action);
+  if (cmpChart) cmpChart.destroy();
+  cmpChart = new Chart(document.getElementById('cmpchart'), {type: 'bar',
+    data: {labels, datasets: [
+      {label: 'market swing (pp)', data: rows.map(r => r.market_mean == null ? null : +(r.market_mean*100).toFixed(2)), backgroundColor: '#1652f0'},
+      {label: 'outcome-model WPA (pp)', data: rows.map(r => r.model_mean == null ? null : +(r.model_mean*100).toFixed(2)), backgroundColor: '#0aa574'}]},
+    options: {animation: false, responsive: true, maintainAspectRatio: false,
+      scales: {y: {title: {display: true, text: 'mean swing toward acting side (pp)'}}},
+      plugins: {legend: {position: 'bottom'}, tooltip: {callbacks: {afterLabel: c => { const r = rows[c.dataIndex];
+        return c.datasetIndex === 0 ? `n=${r.market_n} (aligned games)` : `n=${r.model_n} (all scraped games)`; }}}}}});
+  draftTable('cmp-table', rows, [
+    {h: 'event', key: 'action', f: r => r.action},
+    {h: 'market n', key: 'market_n', num: true, f: r => r.market_n},
+    {h: 'market mean (pp)', key: 'market_mean', num: true, f: r => r.market_mean == null ? '—' : pp(r.market_mean), color: true},
+    {h: 'model n', key: 'model_n', num: true, f: r => r.model_n},
+    {h: 'model WPA mean (pp)', key: 'model_mean', num: true, f: r => r.model_mean == null ? '—' : pp(r.model_mean), color: true},
+    {h: 'model median (pp)', key: 'model_median', num: true, f: r => r.model_median == null ? '—' : pp(r.model_median), color: true},
+    {h: 'market / model', key: 'ratio', num: true, f: r => r.ratio == null ? '—' : r.ratio.toFixed(2) + '×'},
+  ]);
+}
+async function eventImpact(){
+  const q = `platform=${document.getElementById('im-plat').value}&phase=${document.getElementById('im-phase').value}` +
+            `&league=${encodeURIComponent(document.getElementById('im-league').value.trim())}&min_n=${document.getElementById('im-minn').value}`;
+  impactCompare(q).catch(e => { document.getElementById('cmp-table').textContent = 'compare failed: ' + e; });
+  const rows = await getJSON('/api/align/impact?' + q);
+  draftTable('im-table', rows, [
+    {h: 'event', key: 'action', f: r => r.action},
+    {h: 'n', key: 'n', num: true, f: r => r.n},
+    {h: 'mean swing to actor (pp)', key: 'mean_swing', num: true, f: r => pp(r.mean_swing), color: true},
+    {h: 'median swing (pp)', key: 'median_swing', num: true, f: r => pp(r.median_swing), color: true},
+    {h: 'mean |Δ| (pp)', key: 'mean_abs', num: true, f: r => (r.mean_abs*100).toFixed(1)},
+    {h: 'anchored share', key: 'matched_share', num: true, f: r => (r.matched_share*100).toFixed(0) + '%'},
+  ]);
+}
+alLoadList().catch(e => { document.getElementById('al-meta').textContent = 'unavailable: ' + e; });
+
+
+// --------------------------------------------------------------- picker
+let PK = {trs: [], games: []};
+async function pkInit(){
+  PK.trs = await getJSON('/api/picker/tournaments');
+  const seasons = [...new Set(PK.trs.map(t => t.season))].sort().reverse();
+  const ss = document.getElementById('pk-season');
+  ss.innerHTML = '';
+  seasons.forEach(x => ss.appendChild(el('option', {value: x}, x === 'S16' ? 'S16 (2026)' : x === 'S15' ? 'S15 (2025)' : x === 'S14' ? 'S14 (2024)' : x)));
+  ss.onchange = pkLeagues;
+  pkLeagues();
+}
+function pkLeagues(){
+  const season = document.getElementById('pk-season').value;
+  const ls = document.getElementById('pk-league');
+  ls.innerHTML = '';
+  const regs = {};
+  PK.trs.filter(t => t.season === season).forEach(t => { regs[t.region] = t.region_label; });
+  const order = Object.keys(regs).sort((a, b) => {
+    const pri = r => ({KR:0, CN:1, EUW:2, NA:3, LTA:3, BR:4, VN:5, PCS:6, WR:7}[r] ?? 9);
+    return pri(a) - pri(b) || regs[a].localeCompare(regs[b]); });
+  order.forEach(r => ls.appendChild(el('option', {value: r}, regs[r])));
+  ls.onchange = pkTournaments;
+  pkTournaments();
+}
+function pkTournaments(){
+  const season = document.getElementById('pk-season').value;
+  const region = document.getElementById('pk-league').value;
+  const ts = document.getElementById('pk-tr');
+  ts.innerHTML = '';
+  const list = PK.trs.filter(t => t.season === season && t.region === region)
+    .sort((a, b) => (b.last_game || '').localeCompare(a.last_game || ''));
+  list.forEach(t => ts.appendChild(el('option', {value: t.trname},
+    `${t.trname}  (${t.scraped}/${t.nbgames} scraped${t.aligned ? ', ' + t.aligned + ' aligned' : ''})`)));
+  ts.onchange = pkGames;
+  pkGames();
+}
+async function pkGames(){
+  const trname = document.getElementById('pk-tr').value;
+  const box = document.getElementById('pk-games');
+  const meta = document.getElementById('pk-meta');
+  box.innerHTML = ''; meta.textContent = '';
+  if (!trname) return;
+  PK.games = await getJSON('/api/picker/games?trname=' + encodeURIComponent(trname));
+  if (!PK.games.length){ box.innerHTML = '<p class="muted">no games scraped yet for this tournament (the gol.gg scrape is still running)</p>'; return; }
+  meta.textContent = `${PK.games.length} games · click a game to load its odds markets and timeline`;
+  const table = el('table'); const hdr = el('tr');
+  ['date','game','blue','red','winner','length','patch','odds','timeline'].forEach(h => hdr.appendChild(el('th', {}, h)));
+  table.appendChild(hdr);
+  for (const g of PK.games){
+    const tr = el('tr', {class: 'game'});
+    tr.appendChild(el('td', {}, g.date || ''));
+    tr.appendChild(el('td', {}, 'G' + g.game_num));
+    const bt = el('td', {}, g.blue_team); if (g.winner_side === 'blue') bt.style.fontWeight = '600';
+    const rt = el('td', {}, g.red_team); if (g.winner_side === 'red') rt.style.fontWeight = '600';
+    tr.appendChild(bt); tr.appendChild(rt);
+    tr.appendChild(el('td', {}, g.winner_side === 'blue' ? g.blue_team : g.winner_side === 'red' ? g.red_team : ''));
+    tr.appendChild(el('td', {}, g.duration_s ? Math.floor(g.duration_s/60) + ':' + String(g.duration_s%60).padStart(2,'0') : ''));
+    tr.appendChild(el('td', {class: 'muted'}, g.patch || ''));
+    tr.appendChild(el('td', {class: 'muted'}, (g.events || []).map(e => e[0][0].toUpperCase()).join(' ') || '—'));
+    tr.appendChild(el('td', {class: 'muted'}, (g.alignments || []).length ? '✓' : '—'));
+    tr.addEventListener('click', () => pkOpen(g));
+    table.appendChild(tr);
+  }
+  box.appendChild(table);
+}
+// ---------------------------------------------------- page-wide selection
+let SEL = null;              // selected game context (from /api/picker/game)
+let SEL_TEAMS = [];          // normalized team names to highlight in tables
+const normT = x => String(x || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\b(esports?|e-sports|gaming|team|club|gg)\b/g, '').replace(/\s+/g, ' ').trim();
+function draftOrderFill(d){
+  // competitive order: B R B R B R bans, B R R B B R picks, R B R B bans, R B B R picks
+  const bb = d.blue_bans || [], rb = d.red_bans || [], bp = d.blue_picks || [], rp = d.red_picks || [];
+  const seq = [bb[0], rb[0], bb[1], rb[1], bb[2], rb[2],
+               bp[0], rp[0], rp[1], bp[1], bp[2], rp[2],
+               rb[3], bb[3], rb[4], bb[4],
+               rp[3], bp[3], bp[4], rp[4]];
+  const sides = simOrder.map(o => o[0] === 'B' ? 'blue' : 'red');
+  // gol.gg spells some names differently from Oracle's Elixir (KSante vs K'Sante,
+  // Jarvan IV vs JarvanIV); map onto the simulator's champion list by normalized name
+  const canon = {};
+  [...document.getElementById('champlist').options].forEach(o => { canon[o.value.toLowerCase().replace(/[^a-z0-9]/g, '')] = o.value; });
+  const fix = c => c ? (canon[String(c).toLowerCase().replace(/[^a-z0-9]/g, '')] || c) : '';
+  simActions = seq.map(fix);
+  const roleOf = {};
+  (d.players || []).forEach(p => { roleOf[p.side + '|' + fix(p.champion)] = (p.role || '').toLowerCase()
+    .replace('jungle', 'jng').replace('support', 'sup').replace('adc', 'bot').replace('middle', 'mid'); });
+  simRoles = seq.map((c, i) => simOrder[i][1] === 'pick' && c ? (roleOf[sides[i] + '|' + fix(c)] || '') : '');
+}
+async function selectGame(gameId){
+  const d = await getJSON('/api/picker/game?game_id=' + gameId);
+  if (d.error) return;
+  SEL = d; SEL_TEAMS = [normT(d.blue_team), normT(d.red_team)];
+  const b = document.getElementById('sel-banner');
+  b.style.display = 'block';
+  b.innerHTML = '';
+  b.appendChild(document.createTextNode(`Selected: ${d.date} · ${d.trname} · Game ${d.game_num} — `));
+  const bt = el('b', {}, d.blue_team); if (d.winner_side === 'blue') bt.style.textDecoration = 'underline';
+  const rt = el('b', {}, d.red_team); if (d.winner_side === 'red') rt.style.textDecoration = 'underline';
+  b.appendChild(bt); b.appendChild(document.createTextNode(' (blue) vs ')); b.appendChild(rt);
+  b.appendChild(document.createTextNode(` (red) · patch ${d.patch || '?'} · league ${d.oe_league || '?'}` +
+    (d.pre_blue_market != null ? ` · market pre-draft blue ${(d.pre_blue_market*100).toFixed(0)}%` : '') +
+    (d.pre_blue_elo != null ? ` · Elo blue ${(d.pre_blue_elo*100).toFixed(0)}%` : '') +
+    ' — all sections below now reflect this game. '));
+  const clr = el('button', {style: 'font-size:12px;padding:2px 8px'}, 'clear');
+  clr.addEventListener('click', () => { SEL = null; SEL_TEAMS = []; b.style.display = 'none'; });
+  b.appendChild(clr);
+  // odds chart + markets
+  const evs = d.events || [];
+  const res = document.getElementById('results'); res.innerHTML = '';
+  if (evs.length){
+    const table = el('table');
+    for (const [plat, ev] of evs){
+      const tr = el('tr', {class: 'game'});
+      tr.appendChild(el('td', {class: 'plat-' + plat}, plat)); tr.appendChild(el('td', {}, ev));
+      tr.addEventListener('click', () => openGame(plat, ev)); table.appendChild(tr);
+    }
+    res.appendChild(table);
+    await openGame(evs[0][0], evs[0][1]);
+    const want = new RegExp('(game|map) ' + d.game_num + '\\b', 'i');
+    [...document.querySelectorAll('#markets label')].forEach(l => {
+      if (want.test(l.textContent) && /winner|win map/i.test(l.textContent)) { const cb = l.querySelector('input'); if (cb && !cb.checked) cb.click(); } });
+  } else res.innerHTML = '<p class="muted">no odds markets linked to this game</p>';
+  // timeline alignment + model WP
+  const al = d.alignments || [];
+  if (al.length){
+    const sel = document.getElementById('al-game');
+    const best = al[0];
+    const val = JSON.stringify([d.game_id, best[0], best[1]]);
+    if (![...sel.options].some(o => o.value === val)) sel.appendChild(el('option', {value: val}, `${d.date} G${d.game_num} ${d.blue_team} vs ${d.red_team} — ${best[0]} (${best[2]})`));
+    sel.value = val; alShow().catch(() => {});
+  } else {
+    // no odds for this game: clear any previous game's timeline so it can't mislead
+    if (alChart){ alChart.destroy(); alChart = null; }
+    document.getElementById('al-events').innerHTML = '';
+    document.getElementById('al-meta').textContent = d.oe_game_id
+      ? 'no odds series for this game (no market covered it, or its trades/prices are not backfilled)'
+      : 'this gol.gg game is not linked to an Oracle\'s Elixir game (team-name/date mismatch), so no market can be attached';
+  }
+  wpShow(d.game_id).catch(() => {});
+  // league-scoped sections
+  const lg = d.oe_league || '';
+  document.getElementById('dr-league').value = lg;
+  document.getElementById('im-league').value = lg;
+  document.getElementById('wp-league').value = lg;
+  document.getElementById('df-league').value = lg;
+  draftAnalysis().catch(() => {});
+  eventImpact().catch(() => {});
+  wpImpact().catch(() => {});
+  draftFree().catch(() => {});
+  // draft simulator: the game's real draft
+  if (simOrder){
+    draftOrderFill(d);
+    const ps = document.getElementById('sim-patch');
+    if (d.patch && [...ps.options].some(o => o.value === d.patch)) ps.value = d.patch;
+    const pre = d.pre_blue_market != null ? d.pre_blue_market : (d.pre_blue_elo != null ? d.pre_blue_elo : 0.5);
+    document.getElementById('sim-pre').value = Math.round(pre * 100);
+    simRun().catch(() => {});
+  }
+}
+async function pkOpen(g){
+  return selectGame(g.game_id);
+}
+async function pkOpen_legacy(g){
+  // odds chart: open the first platform event with markets; list both in results
+  const evs = g.events || [];
+  const res = document.getElementById('results'); res.innerHTML = '';
+  if (evs.length){
+    const table = el('table');
+    for (const [plat, ev] of evs){
+      const tr = el('tr', {class: 'game'});
+      tr.appendChild(el('td', {class: 'plat-' + plat}, plat));
+      tr.appendChild(el('td', {}, ev));
+      tr.addEventListener('click', () => openGame(plat, ev));
+      table.appendChild(tr);
+    }
+    res.appendChild(table);
+    await openGame(evs[0][0], evs[0][1]);
+    // pre-tick this game's winner markets (Game N winner / map N)
+    const want = new RegExp('(game|map) ' + g.game_num + '\\b', 'i');
+    [...document.querySelectorAll('#markets label')].forEach(l => {
+      if (want.test(l.textContent) && /winner|win map/i.test(l.textContent)) { const cb = l.querySelector('input'); if (cb && !cb.checked) cb.click(); }
+    });
+  } else {
+    res.innerHTML = '<p class="muted">no odds markets linked to this game</p>';
+  }
+  // timeline view
+  const al = (g.alignments || []);
+  if (al.length){
+    const sel = document.getElementById('al-game');
+    const best = al.slice().sort((a, b) => (b[3] || 0) - (a[3] || 0))[0];
+    const val = JSON.stringify([g.game_id, best[0], best[1]]);
+    if (![...sel.options].some(o => o.value === val)) sel.appendChild(el('option', {value: val}, `${g.date} G${g.game_num} ${g.blue_team} vs ${g.red_team} — ${best[0]} (${best[2]})`));
+    sel.value = val;
+    await alShow();
+  }
+  wpShow(g.game_id).catch(() => {});
+  document.getElementById('chartbox').scrollIntoView({block: 'start', behavior: 'smooth'});
+}
+pkInit().catch(e => { document.getElementById('pk-meta').textContent = 'picker unavailable: ' + e; });
+
+
+// ------------------------------------------------------ odds-free models
+let wpChart = null;
+async function wpShow(gameId){
+  const d = await getJSON('/api/wpa/game?game_id=' + gameId);
+  if (d.error){ document.getElementById('wp-meta').textContent = d.error; return; }
+  document.getElementById('wp-meta').textContent =
+    `${d.blue_team} (blue) vs ${d.red_team} — winner: ${d.winner_side} — model WP for blue on the in-game clock`;
+  const evs = d.events.filter(e => e.action !== 'plate');
+  if (wpChart) wpChart.destroy();
+  wpChart = new Chart(document.getElementById('wpchart'), {type: 'line',
+    data: {datasets: [
+      {label: 'blue WP', data: d.curve.map(([t,p]) => ({x: t/60, y: p})), borderColor: '#1652f0', borderWidth: 1.5, pointRadius: 0, parsing: false},
+      {label: 'events', type: 'scatter', data: evs.map(e => ({x: e.time_s/60, y: e.wp_after, e})),
+       pointBackgroundColor: evs.map(e => evColor(e.action)), pointBorderColor: '#fff', pointBorderWidth: 1,
+       pointRadius: evs.map(e => e.action === 'kill' ? 3.5 : 5.5), parsing: false}]},
+    options: {animation: false, responsive: true, maintainAspectRatio: false,
+      scales: {x: {type: 'linear', title: {display: true, text: 'game minute'}}, y: {min: 0, max: 1}},
+      plugins: {legend: {display: false}, zoom: ZOOM_OPTS, tooltip: {callbacks: {label: c => { const e = c.raw.e; if (!e) return 'WP ' + c.parsed.y;
+        return `${Math.floor(e.time_s/60)}:${String(e.time_s%60).padStart(2,'0')} ${e.side||''} ${e.action}${e.player ? ' '+e.player : ''}${e.target ? ' → '+e.target : ''} | WPA ${pp(e.wpa)} pp`; }}}}}});
+  wireDblClick('wpchart', () => wpChart);
+}
+async function wpImpact(){
+  const q = `phase=${document.getElementById('wp-phase').value}&league=${encodeURIComponent(document.getElementById('wp-league').value.trim())}&min_n=10`;
+  const d = await getJSON('/api/wpa/impact?' + q);
+  draftTable('wp-table', d.rows, [
+    {h: 'event', key: 'action', f: r => r.action},
+    {h: 'n', key: 'n', num: true, f: r => r.n},
+    {h: 'mean WPA to actor (pp)', key: 'mean_wpa', num: true, f: r => pp(r.mean_wpa), color: true},
+    {h: 'median (pp)', key: 'median_wpa', num: true, f: r => pp(r.median_wpa), color: true},
+    {h: 'mean |Δ|', key: 'mean_abs', num: true, f: r => (r.mean_abs*100).toFixed(1)},
+  ]);
+  if (d.meta) document.getElementById('wp-table').appendChild(el('p', {class: 'muted'},
+    `model: ${d.meta.games} games / ${d.meta.rows} states · holdout log-loss ${d.meta.holdout_logloss} (baseline ${d.meta.baseline_logloss}) · acc ${(d.meta.holdout_acc*100).toFixed(1)}%`));
+}
+async function draftFree(){
+  const q = `league=${encodeURIComponent(document.getElementById('df-league').value.trim())}&min_n=${document.getElementById('df-minn').value}`;
+  const [t, c] = await Promise.all([getJSON('/api/draftfree/teams?' + q), getJSON('/api/draftfree/champions?min_n=20')]);
+  draftTable('df-teams', t.rows, [
+    {h: 'team', key: 'team', f: r => r.team}, {h: 'games', key: 'n', num: true, f: r => r.n},
+    {h: 'draft edge (pp)', key: 'avg_edge', num: true, f: r => pp(r.avg_edge), color: true},
+    {h: 'P(win) elo', key: 'avg_p_elo', num: true, f: r => (r.avg_p_elo*100).toFixed(0) + '%'},
+    {h: 'P(win) elo+draft', key: 'avg_p_full', num: true, f: r => (r.avg_p_full*100).toFixed(0) + '%'},
+    {h: 'won', key: 'win_rate', num: true, f: r => (r.win_rate*100).toFixed(0) + '%'},
+  ]);
+  if (t.meta) document.getElementById('df-meta').textContent =
+    `${t.meta.games} games · holdout log-loss elo+draft ${t.meta.holdout_logloss_full} vs elo-only ${t.meta.holdout_logloss_elo_only}`;
+  draftTable('df-champs', c, [
+    {h: 'champion', key: 'name', f: r => r.name}, {h: 'picks', key: 'n', num: true, f: r => r.n},
+    {h: 'effect (pp at 50%)', key: 'dp', num: true, f: r => pp(r.dp), color: true},
+  ], 12);
+}
+
+
+let wpcChart = null;
+async function wpCalibration(){
+  const st = document.getElementById('wpc-stats');
+  st.textContent = 'computing (refits on a holdout; ~10 s)…';
+  const d = await getJSON('/api/wpa/calibration');
+  const mk = (label, bins, color, dash) => ({label, borderColor: color, backgroundColor: color, showLine: true, tension: 0,
+    borderDash: dash || [], pointRadius: bins.filter(b => b.n).map(b => Math.max(3, Math.min(9, Math.sqrt(b.n)/6))),
+    data: bins.filter(b => b.n).map(b => ({x: b.mean_pred, y: b.obs_freq, n: b.n}))});
+  const ds = [{label: 'perfect', borderColor: '#bbb', borderDash: [6,4], pointRadius: 0, data: [{x:0,y:0},{x:1,y:1}], showLine: true},
+              mk(`model, held-out states (Brier ${d.model.overall.brier})`, d.model.overall.bins, '#0aa574')];
+  const rows = [{src: 'model · held-out states', n: d.model.overall.n, brier: d.model.overall.brier, logloss: d.model.overall.logloss}];
+  for (const [ph, v] of Object.entries(d.model.by_phase)) rows.push({src: `model · ${ph}`, n: v.n, brier: v.brier, logloss: v.logloss});
+  const colors = {polymarket: '#1652f0', kalshi: '#7b3ff2'};
+  for (const [plat, v] of Object.entries(d.vs_market)){
+    ds.push(mk(`${plat} market (Brier ${v.market.brier})`, v.market.bins, colors[plat]));
+    ds.push(mk(`model @ same ${plat} points (Brier ${v.model_same_points.brier})`, v.model_same_points.bins, colors[plat], [4,3]));
+    rows.push({src: `${plat} market @ event instants (${v.games} games)`, n: v.market.n, brier: v.market.brier, logloss: v.market.logloss});
+    rows.push({src: `model @ same ${plat} instants`, n: v.model_same_points.n, brier: v.model_same_points.brier, logloss: v.model_same_points.logloss});
+  }
+  if (wpcChart) wpcChart.destroy();
+  wpcChart = new Chart(document.getElementById('wpcchart'), {type: 'scatter', data: {datasets: ds},
+    options: {animation: false, responsive: true, maintainAspectRatio: false,
+      scales: {x: {min: 0, max: 1, title: {display: true, text: 'predicted win probability'}},
+               y: {min: 0, max: 1, title: {display: true, text: 'observed win frequency'}}},
+      plugins: {legend: {position: 'bottom'}, tooltip: {callbacks: {label: c => `pred ${c.parsed.x} → obs ${c.parsed.y}` + (c.raw.n != null ? ` (n=${c.raw.n})` : '')}}}}});
+  draftTable('wpc-table', rows, [
+    {h: 'source', key: 'src', f: r => r.src}, {h: 'n points', key: 'n', num: true, f: r => r.n},
+    {h: 'Brier (lower better)', key: 'brier', num: true, f: r => r.brier},
+    {h: 'log-loss', key: 'logloss', num: true, f: r => r.logloss}]);
+  st.textContent = `held-out games: ${d.model.games_test} of ${d.model.games_test + d.model.games_train}`;
+}
+
+
+async function wpxResults(){
+  const d = await getJSON('/api/wpx/results');
+  if (d.error){ document.getElementById('wpx-table').textContent = d.error; return; }
+  const f4 = v => v == null ? '—' : v.toFixed(4);
+  const blendRows = [];
+  if (d.historical_blend){
+    const h = d.historical_blend, t = h.test;
+    blendRows.push({timing:'historical odds only · no live quote', platform:'pooled history',
+      method:h.deployed ? 'deployed' : 'rejected by holdout', games:h.split.test_games,
+      blend_g:t.historical_blend.brier_game, blend_s:t.historical_blend.brier_state,
+      market_g:null, model_g:t.model.brier_game});
+  }
+  for (const [timing, blend] of [['event aligned', d.blend_benchmark], ['market +45s', d.blend_latency45]]){
+    if (!blend) continue;
+    for (const platform of ['polymarket','kalshi']){
+      const r = blend[platform], win = r.test[r.winner];
+      blendRows.push({timing, platform, method: r.winner, games: r.split.test_games,
+        blend_g: win.brier_game, blend_s: win.brier_state,
+        market_g: r.test.market.brier_game, model_g: r.test.model.brier_game});
+    }
+  }
+  if (d.blend_latency45?.after_draft){
+    const draftBlend = d.blend_latency45.after_draft;
+    for (const platform of ['polymarket','kalshi']){
+      const r = draftBlend[platform], win = r.test[r.winner];
+      blendRows.push({timing: `draft complete · market +${draftBlend.market_offset_s}s`,
+        platform, method: r.winner, games: r.split.test_games,
+        blend_g: win.brier_game, blend_s: win.brier_state,
+        market_g: r.test.market.brier_game, model_g: r.test.model.brier_game});
+    }
+  }
+  if (blendRows.length) draftTable('wpx-blends', blendRows, [
+    {h: 'blend experiment', key: 'timing', f: r => r.timing},
+    {h: 'platform', key: 'platform', f: r => r.platform},
+    {h: 'winner', key: 'method', f: r => r.method},
+    {h: 'test games', key: 'games', num: true, f: r => r.games},
+    {h: 'blend Brier · game', key: 'blend_g', num: true, f: r => f4(r.blend_g)},
+    {h: 'blend Brier · state', key: 'blend_s', num: true, f: r => f4(r.blend_s)},
+    {h: 'market Brier · game', key: 'market_g', num: true, f: r => f4(r.market_g)},
+    {h: 'model Brier · game', key: 'model_g', num: true, f: r => f4(r.model_g)}]);
+  else document.getElementById('wpx-blends').textContent = '';
+  const bench = d.method_benchmark;
+  if (bench){
+    const mrows = (bench.ranking || []).map(method => ({method, ...bench.test[method]}));
+    draftTable('wpx-methods', mrows, [
+      {h: `causal method benchmark · newest ${bench.split.test_games} games`, key: 'method', f: r => r.method},
+      {h: 'Brier · game weighted', key: 'brier_game', num: true, f: r => f4(r.brier_game)},
+      {h: 'Brier · state weighted', key: 'brier_state', num: true, f: r => f4(r.brier_state)},
+      {h: 'log-loss · game weighted', key: 'logloss_game', num: true, f: r => f4(r.logloss_game)},
+      {h: 'calibration slope', key: 'calibration', num: true, f: r => f4(r.calibration.slope)},
+      {h: 'delta vs best', key: 'delta_brier_game_vs_best', num: true, f: r => f4(r.delta_brier_game_vs_best)}]);
+  } else document.getElementById('wpx-methods').textContent = '';
+  const gam = d.constrained_walk_forward;
+  if (gam){
+    const grows = [{phase: 'overall', ...gam.overall},
+      ...(gam.pregame_baseline ? [{phase: 'pregame baseline', ...gam.pregame_baseline}] : []),
+      ...Object.entries(gam.by_phase || {}).map(([phase, v]) => ({phase, ...v})),
+      ...Object.entries(gam.event_aligned || {}).flatMap(([platform, v]) => [
+        {phase: `event ${platform.toUpperCase()} · model`, ...v.model},
+        {phase: `event ${platform.toUpperCase()} · market`, ...v.market}])];
+    draftTable('wpx-gam', grows, [
+      {h: `constrained GAM · ${gam.split} split`, key: 'phase', f: r => r.phase},
+      {h: 'states', key: 'states', num: true, f: r => r.states},
+      {h: 'games', key: 'games', num: true, f: r => r.games},
+      {h: 'Brier · state weighted', key: 'brier_state', num: true, f: r => f4(r.brier_state)},
+      {h: 'Brier · game weighted', key: 'brier_game', num: true, f: r => f4(r.brier_game)},
+      {h: 'game-block 95% CI', key: 'brier_game_ci95', f: r => `${f4(r.brier_game_ci95[0])}–${f4(r.brier_game_ci95[1])}`},
+      {h: 'log-loss', key: 'logloss_state', num: true, f: r => f4(r.logloss_state)}]);
+  } else document.getElementById('wpx-gam').textContent = '';
+  draftTable('wpx-table', d.scoreboard, [
+    {h: 'model', key: 'model', f: r => r.model},
+    {h: 'Brier all states', key: 'all', num: true, f: r => f4(r.all)},
+    {h: 'Brier @PM events', key: 'pm', num: true, f: r => f4(r.pm)},
+    {h: 'Brier @KS events', key: 'ks', num: true, f: r => f4(r.ks)},
+    {h: 'PM early', key: 'pm_early', num: true, f: r => f4(r.pm_early)},
+    {h: 'PM mid', key: 'pm_mid', num: true, f: r => f4(r.pm_mid)},
+    {h: 'PM late', key: 'pm_late', num: true, f: r => f4(r.pm_late)}]);
+  const box = document.getElementById('wpx-fair'); box.innerHTML = '';
+  const rows = [];
+  for (const [key, plats] of Object.entries(d.fair)){
+    const [model, lag] = key.split('|');
+    for (const [plat, v] of Object.entries(plats)){
+      rows.push({setting: `${model} · ${lag === 'lag0' ? 'equal wall time' : 'market +' + lag.replace('lag-','') + 's reaction'} · ${plat}`,
+        n: v.n, market: v.market, model: v.model, diff: v.model - v.market,
+        m_early: v.market_early, d_early: v.model_early, m_mid: v.market_mid, d_mid: v.model_mid, m_late: v.market_late, d_late: v.model_late, blend: v.blend50});
+    }
+  }
+  draftTable('wpx-fair', rows, [
+    {h: 'fair comparison', key: 'setting', f: r => r.setting}, {h: 'n', key: 'n', num: true, f: r => r.n},
+    {h: 'market Brier', key: 'market', num: true, f: r => f4(r.market)}, {h: 'model Brier', key: 'model', num: true, f: r => f4(r.model)},
+    {h: 'model − market', key: 'diff', num: true, f: r => (r.diff > 0 ? '+' : '') + r.diff.toFixed(4), color: true},
+    {h: 'early mkt/model', key: 'm_early', num: true, f: r => f4(r.m_early) + ' / ' + f4(r.d_early)},
+    {h: 'mid', key: 'm_mid', num: true, f: r => f4(r.m_mid) + ' / ' + f4(r.d_mid)},
+    {h: 'late', key: 'm_late', num: true, f: r => f4(r.m_late) + ' / ' + f4(r.d_late)},
+    {h: '50/50 blend', key: 'blend', num: true, f: r => f4(r.blend)}]);
+  // in this table, negative diff (model better) should read green: flip the colouring
+  [...document.querySelectorAll('#wpx-fair tr')].forEach(tr => { const td = tr.children[4]; if (td && td.style.color){ td.style.color = td.textContent.startsWith('-') ? '#0a7a44' : '#c22'; } });
+}
+
+async function shadowResults(){
+  const d = await getJSON('/api/shadow/results'), s = d.status || {};
+  const st = document.getElementById('shadow-stats');
+  st.textContent = `protocol ${s.protocol_id || '—'} · ${s.games || 0} captured games / ${s.rows || 0} minute rows · outcomes ${JSON.stringify(s.outcomes || {})}`;
+  const rows = [];
+  for (const platform of ['polymarket','kalshi']){
+    const r = d.score?.platforms?.[platform];
+    if (!r?.games) continue;
+    const shown = r.confirmatory || r;
+    const forecast = shown.paired.forecast || 'blend';
+    rows.push({platform, games:shown.games, states:shown.states,
+      forecast, blend:shown.scores.blend?.brier_game, market:shown.scores.market.brier_game,
+      model:shown.scores.model.brier_game, improvement:shown.paired.market_minus_forecast ?? shown.paired.market_minus_blend,
+      lo:shown.paired.ci95?.[0], hi:shown.paired.ci95?.[1], lead:shown.median_market_lead_s,
+      ready:r.confirmatory_frozen ? 'confirmatory · frozen' : `descriptive (${r.games}/${r.confirmatory_target_games})`});
+  }
+  if (!rows.length){
+    document.getElementById('shadow-table').textContent = 'No prospectively captured games have resolved yet.';
+    return;
+  }
+  const f4 = v => v == null ? '—' : Number(v).toFixed(4);
+  draftTable('shadow-table', rows, [
+    {h:'prospective platform', key:'platform', f:r=>r.platform},
+    {h:'games', key:'games', num:true, f:r=>r.games},
+    {h:'states', key:'states', num:true, f:r=>r.states},
+    {h:'deployed forecast', key:'forecast', f:r=>r.forecast},
+    {h:'historical-blend Brier', key:'blend', num:true, f:r=>f4(r.blend)},
+    {h:'market Brier', key:'market', num:true, f:r=>f4(r.market)},
+    {h:'model Brier', key:'model', num:true, f:r=>f4(r.model)},
+    {h:'market − forecast', key:'improvement', num:true, f:r=>f4(r.improvement)},
+    {h:'paired 95% interval', key:'lo', f:r=>r.lo == null ? '—' : `${f4(r.lo)}…${f4(r.hi)}`},
+    {h:'median market lead', key:'lead', num:true, f:r=>r.lead == null ? '—' : `${r.lead.toFixed(1)}s`},
+    {h:'status', key:'ready', f:r=>r.ready}]);
+}
+
+
+// ------------------------------------------------------------- live game
+let lvChart = null, lvHist = [], lvMk = [], lvMkLastQ = 0, lvTimer = null, lvCurrent = null, lvSince = 0, lvBusy = false, lvStartTs = null, lvBlend = null, lvBlendStatus = null;
+async function lvList(){
+  const sel = document.getElementById('lv-game');
+  let games = [];
+  try { games = await getJSON('/api/live/games'); } catch (e) { games = []; }
+  if (!Array.isArray(games)) games = [];
+  const prev = sel.value;
+  sel.innerHTML = '';
+  if (!games.length){ sel.appendChild(el('option', {value: ''}, 'no LoL Esports game in progress right now')); document.getElementById('lv-box').style.display = 'none'; return; }
+  games.forEach(g => sel.appendChild(el('option', {value: g.game_id}, `${g.league}: ${g.teams.join(' vs ')} — game ${g.number}`)));
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+  sel.onchange = () => { lvHist = []; lvMk = []; lvMkLastQ = 0; lvSince = 0; lvCurrent = null; lvBlend = null; lvBlendStatus = null; lvRefresh(); };
+}
+function lvEnsureChart(){
+  if (lvChart) return;
+  lvChart = new Chart(document.getElementById('lvchart'), {type: 'line', data: {datasets: [
+    {label: 'model', borderColor: '#1652f0', data: [], pointRadius: 0, borderWidth: 1.5},
+    {label: 'model (state-only)', borderColor: '#9db4f5', borderDash: [4,3], data: [], pointRadius: 0, borderWidth: 1},
+    {label: 'kalshi', borderColor: '#0aa574', data: [], pointRadius: 2, borderWidth: 1.5, spanGaps: true, stepped: true},
+    {label: 'polymarket', borderColor: '#7b3ff2', data: [], pointRadius: 2, borderWidth: 1.5, spanGaps: true, stepped: true}]},
+    options: {animation: false, responsive: true, maintainAspectRatio: false, parsing: false, normalized: true,
+      scales: {x: {type: 'linear', title: {display: true, text: 'game minute'}}, y: {min: 0, max: 1, title: {display: true, text: 'P(blue)'}}},
+      plugins: {legend: {position: 'right', labels: {boxWidth: 10, font: {size: 11}}}, zoom: ZOOM_OPTS,
+        tooltip: {callbacks: {title: items => { const m = items[0].parsed.x; return Math.floor(m) + ':' + String(Math.round((m % 1) * 60)).padStart(2, '0'); }}}}}});
+  wireDblClick('lvchart', () => lvChart);
+}
+async function lvRefresh(){
+  if (lvBusy) return;
+  const gid = document.getElementById('lv-game').value;
+  if (!gid) { await lvList(); if (!document.getElementById('lv-game').value) return; }
+  lvBusy = true;
+  const meta = document.getElementById('lv-meta');
+  let d;
+  try { d = await getJSON(`/api/live/series?game_id=${encodeURIComponent(document.getElementById('lv-game').value)}&since=${lvSince}`); }
+  catch (e) { meta.textContent = 'connection hiccup (' + (e.message || e) + ') — retrying on next tick'; lvBusy = false; return; }
+  lvBusy = false;
+  if (d.error){
+    meta.textContent = d.error;
+    if (/no in-progress game/.test(d.error)){   // selected game ended -> hop to the current one
+      await lvList();
+      const sel = document.getElementById('lv-game');
+      if (sel.value && sel.value !== lvCurrent){ lvHist = []; lvMk = []; lvMkLastQ = 0; lvSince = 0; lvCurrent = null; lvBlend = null; lvBlendStatus = null; }
+    }
+    return;
+  }
+  const g = d.game;
+  if (lvCurrent !== g.game_id){ lvHist = []; lvMk = []; lvMkLastQ = 0; lvSince = 0; lvCurrent = g.game_id; lvStartTs = null; lvBlend = null; lvBlendStatus = null; }
+  if (d.game_start_ts && lvStartTs && d.game_start_ts !== lvStartTs){
+    // remake: same game id but the clock was re-anchored to a fresh draft
+    lvHist = []; lvMk = []; lvMkLastQ = 0; lvSince = 0; lvBlend = null; lvBlendStatus = null;
+    document.getElementById('lv-meta').textContent = 'game remade — chart reset for the new draft';
+  }
+  if (d.game_start_ts) lvStartTs = d.game_start_ts;
+  if (d.note && !d.frames.length){
+    meta.textContent = d.note + ' — ' + new Date(d.ts*1000).toISOString().slice(11,19) + 'Z';
+    document.getElementById('lv-box').style.display = 'block';
+    if (!lvHist.length){ document.getElementById('lv-line').innerHTML = `<b>${g.teams[0]}</b> (blue) vs <b>${g.teams[1]}</b> (red) · game ${g.number} — waiting for the live-stats feed…`; return; }
+    // feed is lagging but we already have history: fall through so the (real-time) market quotes keep advancing
+  }
+  const lagNote = (d.note && !d.frames.length) ? d.note : null;
+  document.getElementById('lv-box').style.display = 'block';
+  lvEnsureChart();
+  const mk = d.markets || {};
+  if (d.blend) lvBlend = d.blend;
+  if (d.blend_status) lvBlendStatus = d.blend_status;
+  for (const f of d.frames){
+    lvSince = Math.max(lvSince, f.ts);
+    lvHist.push({t: f.t_min, model: f.p_blue, model0: f.p_blue_no_champ, st: f});
+  }
+  if (lvHist.length){
+    const last = lvHist[lvHist.length - 1];
+    // Markets are real-time; feed frames are feed_lag_s old. Place each quote at its
+    // true game time = last frame's minute + (quote time − frame time), so the market
+    // lines run AHEAD of the model line. Offset is frozen while the game is paused.
+    const qTime = d.ts - (d.markets_age_s || 0);
+    if ((mk.kalshi || mk.polymarket) && qTime > lvMkLastQ){
+      lvMkLastQ = qTime;
+      const paused = last.st.game_state === 'paused';
+      const lead = paused ? 0 : Math.max(0, qTime - (d.frame_ts || last.st.ts)) / 60;
+      lvMk.push({x: last.t + lead, lead_s: Math.round(lead * 60), kalshi: mk.kalshi ? mk.kalshi.p_blue : null, polymarket: mk.polymarket ? mk.polymarket.p_blue : null});
+    }
+    const st = last.st;
+    const scoredDead = [Number(st.dead_blue || 0), Number(st.dead_red || 0)];
+    const boardDead = d.scoreboard ? [
+      d.scoreboard.filter(p => p.side === 'blue' && !p.alive).length,
+      d.scoreboard.filter(p => p.side === 'red' && !p.alive).length,
+    ] : scoredDead;
+    const deadMismatch = d.frame_ts === st.ts && (scoredDead[0] !== boardDead[0] || scoredDead[1] !== boardDead[1]);
+    const clock = `${Math.floor(st.clock_s/60)}:${String(st.clock_s%60).padStart(2,'0')}`;
+    const mkAge = d.markets_age_s;
+    const mkStale = mkAge == null || mkAge > 20;
+    const mkParts = ['kalshi','polymarket'].filter(k => mk[k]).map(k => `${k} ${(mk[k].p_blue*100).toFixed(0)}%${mk[k].source === 'series' ? ' (series mkt)' : ''}${mk[k].stale ? ' (cached px)' : ''}${mk[k].settled ? ' (settled)' : ''}`);
+    const mkTxt = mkParts.length ? mkParts.join(' · ')
+      + (mkAge != null ? ` <span class="muted"${mkStale ? ' style="color:#c00"' : ''}>(quotes ${mkAge.toFixed(0)}s old${mkStale ? ' — STALE' : ''}${lvMk.length ? ', ' + lvMk[lvMk.length-1].lead_s + 's ahead of the feed' : ''})</span>` : '') : '';
+    let blendTxt = '';
+    if (lvBlend){
+      blendTxt = ` · historical blend <b style="color:#7a3db8">P(${g.teams[0]}) = ${(lvBlend.p_blue*100).toFixed(1)}%</b> <span class="muted">(past odds only; no live-odds input)</span>`;
+    } else if (lvBlendStatus?.available && !lvBlendStatus.deployed){
+      const delta = lvBlendStatus.holdout_blend_minus_model;
+      blendTxt = ` · <span class="muted">historical blend not deployed${delta == null ? '' : ` (holdout Brier ${delta >= 0 ? '+' : ''}${delta.toFixed(5)} vs model)`}; model remains independent</span>`;
+    }
+    const terminalTxt = st.terminal_state ? ` · <b style="color:#c22">late mass-death state</b>` : '';
+    document.getElementById('lv-line').innerHTML =
+      `<b>${g.teams[0]}</b> (blue) vs <b>${g.teams[1]}</b> (red) · game ${g.number} · ${clock}${st.game_state === 'finished' ? ' · <b>FINAL</b>' : (st.game_state === 'paused' ? ' · PAUSED' : '')} — ` +
+      `model <b style="color:#1652f0">P(${g.teams[0]}) = ${(st.p_blue*100).toFixed(1)}%</b> ` +
+      `<span class="muted">(same model, champions removed ${(st.p_blue_no_champ*100).toFixed(1)}%)</span>` +
+      (mkTxt ? ` · market: ${mkTxt}` : ' · market: n/a (no map market listed)') + blendTxt + terminalTxt;
+    const stateEl = document.getElementById('lv-state');
+    const objectiveTimer = (side, seconds) => seconds > 0 ? `${side} active ${Math.floor(seconds/60)}:${String(Math.ceil(seconds%60)).padStart(2,'0')}` : null;
+    const activeBarons = [objectiveTimer(g.teams[0], Number(st.baron_timer_blue_s || 0)), objectiveTimer(g.teams[1], Number(st.baron_timer_red_s || 0))].filter(Boolean);
+    const activeElders = [objectiveTimer(g.teams[0], Number(st.elder_timer_blue_s || 0)), objectiveTimer(g.teams[1], Number(st.elder_timer_red_s || 0))].filter(Boolean);
+    const soulOwner = st.soul_blue ? g.teams[0] : (st.soul_red ? g.teams[1] : null);
+    const elementalBlue = (st.dragon_types_blue || []).filter(d => String(d).toLowerCase() !== 'elder');
+    const elementalRed = (st.dragon_types_red || []).filter(d => String(d).toLowerCase() !== 'elder');
+    stateEl.textContent =
+      `gold ${st.gold_blue} vs ${st.gold_red} (${st.gold_diff_k >= 0 ? '+' : ''}${st.gold_diff_k.toFixed(1)}k) · kills ${st.kills_blue}-${st.kills_red} · towers ${st.towers_blue}-${st.towers_red} · ` +
+      `elemental dragons ${st.drag_blue}-${st.drag_red} [${elementalBlue.join(',')}] / [${elementalRed.join(',')}] · soul ${soulOwner || 'none'} · ` +
+      `elders ${st.elders_blue || 0}-${st.elders_red || 0}` +
+      (activeElders.length ? ` (${activeElders.join(' / ')})` : ' (no active buff)') +
+      (st.lo_elder_active != null ? ` · active-Elder log-odds ${st.lo_elder_active >= 0 ? '+' : ''}${st.lo_elder_active.toFixed(2)}` : '') +
+      ` · barons ${st.barons_blue}-${st.barons_red}` +
+      (activeBarons.length ? ` (${activeBarons.join(' / ')})` : ' (no active buff)') +
+      (st.lo_baron_active != null ? ` · active-Baron log-odds ${st.lo_baron_active >= 0 ? '+' : ''}${st.lo_baron_active.toFixed(2)}` : '') +
+      ` · inhibs ${st.inhib_blue}-${st.inhib_red} · ` +
+      `dead ${st.dead_blue}-${st.dead_red} (window-health model input${st.terminal_state ? ', terminal' : ''})` +
+      (st.lo_deaths != null ? ` · death log-odds ${st.lo_deaths >= 0 ? '+' : ''}${st.lo_deaths.toFixed(2)}` : '') +
+      (deadMismatch ? ` · DEATH INPUT MISMATCH: scoreboard ${boardDead[0]}-${boardDead[1]}` : '') +
+      ` · items done diff ${st.items_done_diff >= 0 ? '+' : ''}${st.items_done_diff} · comps ${d.blue_champs.join('/')} vs ${d.red_champs.join('/')}` +
+      (d.priors && d.priors.found ? ` · Elo prior ${Math.round(d.priors.elo_blue)} vs ${Math.round(d.priors.elo_red)}` : ' · no Elo prior found') +
+      (st.lo_prior != null ? ` · log-odds: prior ${st.lo_prior >= 0 ? '+' : ''}${st.lo_prior.toFixed(2)} · state ${st.lo_state >= 0 ? '+' : ''}${st.lo_state.toFixed(2)} · champs ${st.lo_champ >= 0 ? '+' : ''}${st.lo_champ.toFixed(2)} · time ${st.lo_time >= 0 ? '+' : ''}${st.lo_time.toFixed(2)}` : '') +
+      (st.model_kind ? ` · ${st.model_kind}` : '') +
+      ` · ${lvHist.length} frames (1 Hz) · feed lag ${d.feed_lag_s != null ? d.feed_lag_s + ' s' : '?'} (≥35 s is the feed's minimum)`;
+    stateEl.style.color = deadMismatch ? '#c22' : '';
+  }
+  meta.textContent = (lagNote ? lagNote + ' · ' : 'updated ') + new Date(d.ts*1000).toISOString().slice(11,19) + 'Z (+' + d.frames.length + ' frames)';
+  lvScoreboard(d, g);
+  lvChart.data.datasets[0].data = lvHist.map(h => ({x: h.t, y: h.model}));
+  lvChart.data.datasets[1].data = lvHist.map(h => ({x: h.t, y: h.model0}));
+  lvChart.data.datasets[2].data = lvMk.filter(h => h.kalshi != null).map(h => ({x: h.x, y: h.kalshi}));
+  lvChart.data.datasets[3].data = lvMk.filter(h => h.polymarket != null).map(h => ({x: h.x, y: h.polymarket}));
+  lvChart.update();
+}
+
+function lvScoreboard(d, g){
+  if (!d.scoreboard) return;
+  const T = d.totals || {};
+  const tl = (side, name) => { const t = T[side] || {}; return `<b>${name}</b>: ${t.totalGold != null ? (t.totalGold/1000).toFixed(1)+'k gold' : ''} · ${t.totalKills ?? '?'} kills · ${t.towers ?? '?'} towers · ${t.inhibitors ?? 0} inhib · ${t.barons ?? 0} baron · dragons ${(t.dragons||[]).length}${(t.dragons||[]).length ? ' ['+t.dragons.join(',')+']' : ''}`; };
+  document.getElementById('lv-totals').innerHTML =
+    `<span style="color:#1652f0">${tl('blue', g.teams[0])}</span><br><span style="color:#c22">${tl('red', g.teams[1])}</span>` +
+    `<span class="muted"> · scoreboard frame ${new Date(d.frame_ts*1000).toISOString().slice(11,19)}Z</span>`;
+  for (const side of ['blue','red']){
+    const box = document.getElementById(side === 'blue' ? 'lv-sb-blue' : 'lv-sb-red');
+    box.innerHTML = '';
+    const table = el('table'); table.style.tableLayout = 'fixed'; const hdr = el('tr');
+    ['', 'player', 'champion', 'lvl', 'K/D/A', 'CS', 'gold', 'HP', 'items (hover for all)'].forEach(h => hdr.appendChild(el('th', {style: 'white-space:nowrap'}, h)));
+    table.appendChild(hdr);
+    for (const p of d.scoreboard.filter(r => r.side === side)){
+      const tr = el('tr');
+      if (!p.alive){ tr.style.opacity = '0.45'; }
+      tr.appendChild(el('td', {}, p.alive ? '●' : '✝'));
+      tr.appendChild(el('td', {}, (p.player || '').replace(/^\S+\s/, '')));
+      tr.appendChild(el('td', {}, p.champion || ''));
+      tr.appendChild(el('td', {}, String(p.level ?? '')));
+      tr.appendChild(el('td', {}, `${p.k ?? 0}/${p.d ?? 0}/${p.a ?? 0}`));
+      tr.appendChild(el('td', {}, String(p.cs ?? '')));
+      tr.appendChild(el('td', {}, p.gold != null ? (p.gold/1000).toFixed(1) + 'k' : ''));
+      const hp = (p.hp != null && p.max_hp) ? Math.round(100 * p.hp / p.max_hp) : null;
+      const hpTd = el('td', {}, hp != null ? (p.alive ? hp + '%' : 'dead') : '');
+      if (hp != null && p.alive) hpTd.style.color = hp < 30 ? '#c22' : (hp < 60 ? '#b80' : '#0a7a44');
+      tr.appendChild(hpTd);
+      const itemsTd = el('td', {class: 'muted', style: 'font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px', title: (p.items || []).join(', ')},
+        (p.items || []).filter(i => !/Ward|Lens|Potion|Trinket/i.test(i)).join(', '));
+      tr.appendChild(itemsTd);
+      table.appendChild(tr);
+    }
+    box.appendChild(table);
+  }
+}
+
+function lvSchedule(){
+  if (lvTimer) clearInterval(lvTimer);
+  lvTimer = setInterval(() => { if (document.getElementById('lv-auto').checked) lvRefresh().catch(() => {}); },
+                        parseInt(document.getElementById('lv-int').value, 10));
+}
+document.getElementById('lv-int').addEventListener('change', lvSchedule);
+lvList().then(() => { lvRefresh().catch(() => {}); lvSchedule(); setInterval(lvList, 120000); });
+
 function clearChart(){
   if (chart){ chart.data.datasets = []; chart.update(); }
   colorIdx = 0; outageSpans = []; gameStart = null;
@@ -433,6 +1319,8 @@ function renderDT(id){
     if (r === null){
       tr.appendChild(el('td', {class: 'muted', colspan: String(st.cols.length)}, '⋯'));
     } else {
+      const first = String(st.cols[0].f(r) || '');
+      if (SEL_TEAMS.length && SEL_TEAMS.some(t => t && normT(first).includes(t))) tr.style.background = '#eef3ff';
       st.cols.forEach(c => {
         const v = c.f(r);
         const td = el('td', {}, v);
