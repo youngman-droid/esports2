@@ -849,7 +849,9 @@ def live_vector(state, names):
     item_gold_diff_k, t_since_kill_min, baron_up, dragon_up, elo_oe, pelo_oe, elo_gg,
     form_diff, exp_diff, rapm_team, rapm_player.
     """
-    s = dict(state)
+    # A key explicitly set to None (e.g. team_priors' elo_gg when the gol.gg
+    # lookup misses) must behave like a missing key, not poison the vector.
+    s = {k: v for k, v in dict(state).items() if v is not None}
     t = s.get("t_min", 0.0) / 30.0
     gk = s.get("gold_diff_k", 0.0); gk_prev = s.get("gold_diff_prev_k", gk)
     role = s.get("gold_role") or [gk / 5.0] * 5
