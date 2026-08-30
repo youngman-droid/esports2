@@ -734,7 +734,7 @@ def api_live_estimate(params):
             del live.team_priors._cache
         priors = live.team_priors(conn, g["teams"])
         try:
-            r = live.estimate(conn, g["game_id"], {k: v for k, v in priors.items() if k in live.PRIOR_KEYS})
+            r = live.estimate(conn, g["game_id"], priors, teams=g["teams"])
         except Exception as e:
             conn.rollback()
             return {"error": "feed/model failed: %s" % e}
@@ -828,19 +828,14 @@ def api_live_series(params):
             del live.team_priors._cache
         priors = live.team_priors(conn, g["teams"])
         try:
-            r = live.estimate_series(conn, g["game_id"], {k: v for k, v in priors.items() if k in live.PRIOR_KEYS}, since)
+            r = live.estimate_series(conn, g["game_id"], priors, since, teams=g["teams"])
             # the feed is the authority on sides: if it disagrees with the schedule's side info, swap
             ids = g.get("team_ids") or []
             if r.get("blue_team_id") and len(ids) == 2 and r["blue_team_id"] == ids[1]:
                 g["teams"] = g["teams"][::-1]; g["team_ids"] = ids[::-1]; g["wins"] = (g.get("wins") or [])[::-1]
                 _live_mk_cache.pop(g["game_id"], None)
                 priors = live.team_priors(conn, g["teams"])
-                r = live.estimate_series(conn, g["game_id"], {k: v for k, v in priors.items() if k in live.PRIOR_KEYS}, since)
-            sb = r.get("scoreboard") or []
-            r["roster"] = live.roster_check(
-                conn, g["teams"],
-                [x.get("player") for x in sb if x.get("side") == "blue"],
-                [x.get("player") for x in sb if x.get("side") == "red"])
+                r = live.estimate_series(conn, g["game_id"], priors, since, teams=g["teams"])
         except Exception as e:
             conn.rollback()
             return {"error": "feed/model failed: %s" % e}
@@ -860,7 +855,9 @@ def api_live_series(params):
                 r["blend"] = blend
         except (OSError, ValueError, KeyError) as e:
             r["blend_error"] = str(e)
-    r["game"] = g; r["priors"] = priors; r["markets"] = mk; r["ts"] = int(time.time())
+    merged_priors = dict(priors)
+    merged_priors.update(r.get("priors_effective") or {})
+    r["game"] = g; r["priors"] = merged_priors; r["markets"] = mk; r["ts"] = int(time.time())
     return r
 
 

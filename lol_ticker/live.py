@@ -160,7 +160,7 @@ def fetch_state(game_id, item_gold=None):
     return state
 
 
-def estimate(conn, game_id=None, priors=None):
+def estimate(conn, game_id=None, priors=None, teams=None):
     from . import wpx
     if game_id is None:
         lg = live_games()
@@ -168,15 +168,23 @@ def estimate(conn, game_id=None, priors=None):
             return {"error": "no in-progress game on the LoL Esports schedule"}
         game_id = lg[0]["game_id"]
         meta = lg[0]
+        teams = teams or lg[0].get("teams")
     else:
         meta = {"game_id": game_id}
     item_gold = {r["item_id"]: (r["gold"] or 0) for r in conn.execute("SELECT item_id, gold FROM golgg_items")}
     st = fetch_state(game_id, item_gold)
-    st.update(priors or {})
+    roster = pelo_adj = None
+    if teams and priors:
+        priors = lineup_adjusted_priors(conn, teams, priors,
+                                        st.get("blue_players"), st.get("red_players"))
+        roster = priors.get("roster")
+        pelo_adj = priors.get("pelo_adjustment")
+    st.update({k: v for k, v in (priors or {}).items() if k in PRIOR_KEYS})
     pred = wpx.predict_live(st, st["blue_champs"], st["red_champs"])
     # plain production-style estimate (no champion terms) for reference
     pred_nochamp = wpx.predict_live(st, (), ())
     return {"meta": meta, "state": st, "p_blue": pred["p_blue"], "p_blue_no_champ": pred_nochamp["p_blue"],
+            "roster": roster, "pelo_adjustment": pelo_adj,
             "unknown_champions": pred["unknown_champions"]}
 
 
@@ -436,7 +444,8 @@ def team_priors(conn, teams):
     if oe_found:
         b, r_ = vals[nb], vals[nr]
         out.update({"elo_oe": (b[0] - r_[0]) / 400.0, "pelo_oe": (b[1] - r_[1]) / 400.0,
-                    "form_diff": b[2] - r_[2], "elo_blue": b[0], "elo_red": r_[0]})
+                    "form_diff": b[2] - r_[2], "elo_blue": b[0], "elo_red": r_[0],
+                    "pelo_blue": b[1], "pelo_red": r_[1]})
     if gg_found:
         out.update({"elo_gg": (gg_vals[nb] - gg_vals[nr]) / 400.0,
                     "gg_elo_blue": gg_vals[nb], "gg_elo_red": gg_vals[nr]})
@@ -513,6 +522,96 @@ def _reference_roster(conn, team):
         break
     cached["teams"][nt] = ref
     return ref
+
+
+def _player_elos(conn):
+    """norm IGN -> (elo, ngames, last_ts) from oe_player_elo; newest wins."""
+    now = time.time()
+    cached = getattr(_player_elos, "_cache", None)
+    if not cached or now - cached["at"] > 600:
+        table = {}
+        try:
+            for r in conn.execute(
+                    "SELECT norm_name, elo, ngames, last_ts FROM oe_player_elo"):
+                cur = table.get(r["norm_name"])
+                if cur is None or (r["last_ts"] or 0) > cur[2]:
+                    table[r["norm_name"]] = (float(r["elo"]), int(r["ngames"] or 0),
+                                             int(r["last_ts"] or 0))
+        except Exception as exc:
+            conn.rollback()
+            log.warning("player elo table unavailable: %s", exc)
+        cached = {"at": now, "table": table}
+        _player_elos._cache = cached
+    return cached["table"]
+
+
+def _resolve_lineup(table, names):
+    """([elo per resolved player], [unresolved names]) for feed summoner names."""
+    vals, unresolved = [], []
+    for name in names or []:
+        tokens = str(name or "").split()
+        cands = [c for c in (_norm_player(name),
+                             _norm_player(" ".join(tokens[1:])) if len(tokens) > 1 else "")
+                 if c]
+        hit = next((table[c] for c in cands if c in table), None)
+        if hit is None:
+            # tagless joins ("T1Faker"): longest sufficiently-long suffix wins
+            suffix = sorted((k for k in table
+                             if len(k) >= 4 and any(c.endswith(k) for c in cands)),
+                            key=len, reverse=True)
+            hit = table[suffix[0]] if suffix else None
+        if hit is not None:
+            vals.append(hit[0])
+        elif name:
+            unresolved.append(name)
+    return vals, unresolved
+
+
+def lineup_adjusted_priors(conn, teams, priors, blue_players, red_players):
+    """Recompute the player-Elo prior from the lineup actually on the rift.
+
+    Historically ``pelo`` is the mean rating of the five players who played
+    each game, so this only corrects the live approximation (which reads the
+    team's last lineup).  A side is adjusted when its roster differs from
+    the reference roster and at least four of its five names resolve in
+    ``oe_player_elo``; unresolved players inherit the side's team pelo (or
+    1500).  Other prior channels are left untouched.
+    """
+    priors = dict(priors or {})
+    roster = roster_check(conn, teams, blue_players, red_players)
+    priors["roster"] = roster
+    table = _player_elos(conn)
+    means, info = {}, {}
+    for side, names in (("blue", blue_players), ("red", red_players)):
+        team_mean = priors.get("pelo_%s" % side)
+        rc = roster.get(side) or {}
+        needs = (rc.get("changed") or team_mean is None) and bool(names)
+        applied = False
+        if needs and table:
+            vals, unresolved = _resolve_lineup(table, names)
+            if len(vals) >= 4:
+                fill = team_mean if team_mean is not None else 1500.0
+                mean = (sum(vals) + fill * len(unresolved)) / (len(vals) + len(unresolved))
+                means[side] = mean
+                applied = True
+                info[side] = {"applied": True, "lineup_pelo": round(mean, 1),
+                              "reference_pelo": (round(team_mean, 1)
+                                                 if team_mean is not None else None),
+                              "resolved": len(vals), "unresolved": unresolved}
+        if not applied:
+            means[side] = team_mean
+            info[side] = {"applied": False}
+    if means["blue"] is not None and means["red"] is not None:
+        old = priors.get("pelo_oe")
+        priors["pelo_oe"] = (means["blue"] - means["red"]) / 400.0
+        if any(v["applied"] for v in info.values()):
+            priors["found"] = True
+            log.info("lineup-adjusted pelo: %.3f -> %.3f (%s)",
+                     old if old is not None else float("nan"),
+                     priors["pelo_oe"],
+                     {s: v for s, v in info.items() if v["applied"]})
+    priors["pelo_adjustment"] = info
+    return priors
 
 
 def roster_check(conn, teams, blue_players, red_players):
@@ -744,11 +843,13 @@ def _restart_t0(game_id, ts_hint, t0_old):
     return first_ts
 
 
-def estimate_series(conn, game_id, priors=None, since_ts=0):
+def estimate_series(conn, game_id, priors=None, since_ts=0, teams=None):
     """Score every new 1 Hz frame since `since_ts`; returns frames + summary.
 
     Uses the feed's 10-frame windows: one window ~70 s back (latest available),
     one ~190 s back (gold momentum), one details window for items/health.
+    When ``teams`` is given, the player-Elo prior is recomputed for the
+    lineup actually on the rift (see lineup_adjusted_priors) before scoring.
     """
     from . import wpx
     c = _cache.get(game_id)
@@ -759,6 +860,16 @@ def estimate_series(conn, game_id, priors=None, since_ts=0):
                     "patch": None, "game_start_ts": None}
         c = _new_cache(conn, w0["gameMetadata"], _ts(w0["frames"][0]["rfc460Timestamp"]))
         _cache[game_id] = c
+    roster = pelo_adj = None
+    if teams and priors:
+        md = c["md"]
+        priors = lineup_adjusted_priors(
+            conn, teams, priors,
+            [p.get("summonerName") for p in md["blueTeamMetadata"]["participantMetadata"]],
+            [p.get("summonerName") for p in md["redTeamMetadata"]["participantMetadata"]])
+        roster = priors.get("roster")
+        pelo_adj = priors.get("pelo_adjustment")
+    priors = {k: v for k, v in (priors or {}).items() if k in PRIOR_KEYS}
     now = dt.datetime.now(dt.timezone.utc).timestamp()
     w = dd = None
     # The feed serves 10 s windows whose start must be >= ~40 s in the past
@@ -885,4 +996,5 @@ def estimate_series(conn, game_id, priors=None, since_ts=0):
             "patch": c["md"].get("patchVersion"), "game_start_ts": int(c["t0"]),
             "blue_team_id": c.get("blue_team_id"), "red_team_id": c.get("red_team_id"),
             "scoreboard": rows, "totals": totals, "frame_ts": int(_ts(last["rfc460Timestamp"])),
+            "roster": roster, "pelo_adjustment": pelo_adj, "priors_effective": priors,
             "feed_lag_s": int(now - _ts(last["rfc460Timestamp"]))}

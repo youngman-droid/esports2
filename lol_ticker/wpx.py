@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 import urllib.request
 
@@ -43,6 +44,15 @@ ALTER TABLE oe_games ADD COLUMN IF NOT EXISTS red_gold INT;
 ALTER TABLE oe_games ADD COLUMN IF NOT EXISTS gamelength INT;
 ALTER TABLE oe_ratings ADD COLUMN IF NOT EXISTS rapm_team REAL;    -- blue - red, gold/min margin units
 ALTER TABLE oe_ratings ADD COLUMN IF NOT EXISTS rapm_player REAL;  -- blue - red, player ridge ratings summed
+CREATE TABLE IF NOT EXISTS oe_player_elo (
+    pkey      TEXT PRIMARY KEY,     -- OE player_id when present, else IGN
+    name      TEXT,                 -- last seen IGN
+    norm_name TEXT,                 -- lowercase alnum, for live lineup lookup
+    elo       REAL,
+    ngames    INT,
+    last_ts   BIGINT                -- date of the player's newest game
+);
+CREATE INDEX IF NOT EXISTS idx_oe_player_elo_norm ON oe_player_elo (norm_name);
 """
 
 
@@ -183,9 +193,14 @@ def build_ratings(conn, k_team=30.0, k_player=24.0, base=1500.0):
                             WHERE winner IS NOT NULL AND date_utc IS NOT NULL
                             ORDER BY date_utc, game_id""").fetchall()
     players = {}
+    pl_name = {}
     for r in conn.execute("SELECT game_id, team, player_id, player FROM oe_players"):
-        players.setdefault(r["game_id"], {}).setdefault(r["team"], []).append(r["player_id"] or r["player"])
+        key = r["player_id"] or r["player"]
+        players.setdefault(r["game_id"], {}).setdefault(r["team"], []).append(key)
+        if key and r["player"]:
+            pl_name[key] = r["player"]
     team_r, pl_r = {}, {}
+    pl_n, pl_last = {}, {}
     hist = {}   # team -> recent results (1/0), most recent last
     out = []
     for g in games:
@@ -208,14 +223,29 @@ def build_ratings(conn, k_team=30.0, k_player=24.0, base=1500.0):
         for p in players.get(g["game_id"], {}).get(b, []):
             if p:
                 pl_r[p] = pl_r.get(p, base) + k_player * (sb - exp_p)
+                pl_n[p] = pl_n.get(p, 0) + 1
+                pl_last[p] = g["date_utc"]
         for p in players.get(g["game_id"], {}).get(rd, []):
             if p:
                 pl_r[p] = pl_r.get(p, base) + k_player * ((1 - sb) - (1 - exp_p))
+                pl_n[p] = pl_n.get(p, 0) + 1
+                pl_last[p] = g["date_utc"]
     with conn.cursor() as cur:
         cur.execute("DELETE FROM oe_ratings")
         cur.executemany("""INSERT INTO oe_ratings (game_id, elo_blue, elo_red, pelo_blue, pelo_red,
                            n_known_blue, n_known_red, form_blue, form_red, ngames_blue, ngames_red)
                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", out, returning=False)
+        # Current post-pass player ratings, for live lineup-aware pelo
+        # (a substitute's rating is looked up by IGN when the on-rift lineup
+        # differs from the roster behind the team's stored pelo).
+        cur.execute("DELETE FROM oe_player_elo")
+        cur.executemany("""INSERT INTO oe_player_elo
+                           (pkey, name, norm_name, elo, ngames, last_ts)
+                           VALUES (%s,%s,%s,%s,%s,%s)""",
+                        [(p, pl_name.get(p, str(p)),
+                          re.sub(r"[^a-z0-9]", "", str(pl_name.get(p, p)).lower()),
+                          pl_r[p], pl_n.get(p, 0), int(pl_last.get(p, 0)))
+                         for p in pl_r], returning=False)
     conn.commit()
     log.info("wpx: ratings for %d OE games (%d teams, %d players)", len(out), len(team_r), len(pl_r))
 

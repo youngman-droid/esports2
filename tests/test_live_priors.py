@@ -226,6 +226,73 @@ class RosterAwarenessTests(unittest.TestCase):
         self.assertEqual(out["red"]["matched"], 5)
 
 
+class LineupAdjustedPriorTests(unittest.TestCase):
+    def setUp(self):
+        import time
+        live._reference_roster._cache = {
+            "at": time.time(), "teams": {
+                "alpha": {"game_id": 7, "date": "2026-08-20",
+                          "players": ["A1", "A2", "A3", "A4", "A5"]},
+                "beta": {"game_id": 8, "date": "2026-08-20",
+                         "players": ["B1", "B2", "B3", "B4", "B5"]},
+            }, "games": []}
+        table = {live._norm_player(p): (elo, 20, 100) for p, elo in
+                 (("A1", 1500), ("A2", 1500), ("A3", 1500), ("A4", 1500),
+                  ("A5", 1400), ("Sub9", 1800),
+                  ("B1", 1500), ("B2", 1500), ("B3", 1500), ("B4", 1500), ("B5", 1500))}
+        live._player_elos._cache = {"at": time.time(), "table": table}
+
+    def tearDown(self):
+        for fn in (live._reference_roster, live._player_elos):
+            if hasattr(fn, "_cache"):
+                del fn._cache
+
+    def test_substitute_shifts_the_player_elo_prior(self):
+        priors = {"found": True, "pelo_oe": (1480.0 - 1500.0) / 400.0,
+                  "pelo_blue": 1480.0, "pelo_red": 1500.0}
+        out = live.lineup_adjusted_priors(
+            None, ["Alpha", "Beta"],
+            priors,
+            ["ALP A1", "ALP A2", "ALP A3", "ALP A4", "ALP Sub9"],
+            ["BET B1", "BET B2", "BET B3", "BET B4", "BET B5"])
+        # blue lineup mean with Sub9 (1800) = (4*1500+1800)/5 = 1560; red team pelo kept
+        self.assertTrue(out["pelo_adjustment"]["blue"]["applied"])
+        self.assertFalse(out["pelo_adjustment"]["red"]["applied"])
+        self.assertAlmostEqual(out["pelo_oe"], (1560.0 - 1500.0) / 400.0)
+        self.assertTrue(out["roster"]["blue"]["changed"])
+        # the caller's dict is not mutated
+        self.assertAlmostEqual(priors["pelo_oe"], -0.05)
+
+    def test_unchanged_lineups_keep_the_advanced_team_pelo(self):
+        priors = {"found": True, "pelo_oe": 0.1, "pelo_blue": 1540.0, "pelo_red": 1500.0}
+        out = live.lineup_adjusted_priors(
+            None, ["Alpha", "Beta"],
+            priors,
+            ["ALP A1", "ALP A2", "ALP A3", "ALP A4", "ALP A5"],
+            ["BET B1", "BET B2", "BET B3", "BET B4", "BET B5"])
+        self.assertFalse(out["pelo_adjustment"]["blue"]["applied"])
+        self.assertAlmostEqual(out["pelo_oe"], 0.1)
+
+    def test_too_few_resolved_names_leave_the_prior_alone(self):
+        priors = {"found": True, "pelo_oe": 0.0, "pelo_blue": 1500.0, "pelo_red": 1500.0}
+        out = live.lineup_adjusted_priors(
+            None, ["Alpha", "Beta"],
+            priors,
+            ["ALP X1", "ALP X2", "ALP X3", "ALP X4", "ALP Sub9"],
+            ["BET B1", "BET B2", "BET B3", "BET B4", "BET B5"])
+        self.assertFalse(out["pelo_adjustment"]["blue"]["applied"])
+        self.assertAlmostEqual(out["pelo_oe"], 0.0)
+
+    def test_prior_less_teams_get_a_player_based_pelo(self):
+        out = live.lineup_adjusted_priors(
+            None, ["Alpha", "Beta"],
+            {"found": False},
+            ["ALP A1", "ALP A2", "ALP A3", "ALP A4", "ALP Sub9"],
+            ["BET B1", "BET B2", "BET B3", "BET B4", "BET B5"])
+        self.assertTrue(out["found"])
+        self.assertAlmostEqual(out["pelo_oe"], (1560.0 - 1500.0) / 400.0)
+
+
 class MarketResolutionTests(unittest.TestCase):
     def test_sponsor_alias_and_terminal_map_title_resolve_both_exchanges(self):
         self.assertEqual(draft.norm_team("Team Liquid Alienware"), "liquid")

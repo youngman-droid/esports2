@@ -282,16 +282,13 @@ def _record_game(conn, protocol, game, versions):
         del live.team_priors._cache
     priors = live.team_priors(conn, game["teams"])
     estimate = live.estimate_series(
-        conn, game["game_id"],
-        {k: v for k, v in priors.items() if k in live.PRIOR_KEYS},
-        since_ts=0)
+        conn, game["game_id"], priors, since_ts=0, teams=game["teams"])
     oriented = _orient_game(game, estimate)
     if oriented["teams"] != game["teams"]:
         priors = live.team_priors(conn, oriented["teams"])
         estimate = live.estimate_series(
-            conn, oriented["game_id"],
-            {k: v for k, v in priors.items() if k in live.PRIOR_KEYS},
-            since_ts=0)
+            conn, oriented["game_id"], priors, since_ts=0,
+            teams=oriented["teams"])
     frames = estimate.get("frames") or []
     if not frames or not estimate.get("game_start_ts"):
         return 0
@@ -331,14 +328,9 @@ def _record_game(conn, protocol, game, versions):
     state["blue_champs"] = estimate.get("blue_champs") or []
     state["red_champs"] = estimate.get("red_champs") or []
     state["priors"] = priors
-    try:
-        sb = estimate.get("scoreboard") or []
-        state["roster"] = live.roster_check(
-            conn, oriented["teams"],
-            [x.get("player") for x in sb if x.get("side") == "blue"],
-            [x.get("player") for x in sb if x.get("side") == "red"])
-    except Exception as exc:  # diagnostic only; never blocks a capture
-        state["roster"] = {"error": str(exc)}
+    state["priors_effective"] = estimate.get("priors_effective")
+    state["roster"] = estimate.get("roster")
+    state["pelo_adjustment"] = estimate.get("pelo_adjustment")
     if blend_error:
         state["blend_error"] = blend_error
     conn.execute(

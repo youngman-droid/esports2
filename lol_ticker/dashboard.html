@@ -1192,13 +1192,24 @@ async function lvRefresh(){
     }
     const terminalTxt = st.terminal_state ? ` · <b style="color:#c22">late mass-death state</b>` : '';
     const rosterWarn = [];
+    let anyAdjusted = false, anyUnadjusted = false;
     for (const [side, teamName] of [['blue', g.teams[0]], ['red', g.teams[1]]]){
       const rc = (d.roster || {})[side];
-      if (rc && rc.available && rc.changed)
-        rosterWarn.push(`${teamName}: ${rc.new.join('/')} in for ${rc.missing.join('/')}`);
+      if (rc && rc.available && rc.changed){
+        const adj = ((d.pelo_adjustment || {})[side] || {});
+        if (adj.applied){
+          anyAdjusted = true;
+          rosterWarn.push(`${teamName}: ${rc.new.join('/')} in for ${rc.missing.join('/')} (lineup pelo ${adj.reference_pelo != null ? adj.reference_pelo.toFixed(0) + '→' : ''}${adj.lineup_pelo.toFixed(0)})`);
+        } else {
+          anyUnadjusted = true;
+          rosterWarn.push(`${teamName}: ${rc.new.join('/')} in for ${rc.missing.join('/')}`);
+        }
+      }
     }
+    const rosterNote = anyUnadjusted ? 'Elo/form prior may be stale'
+      : 'player-Elo prior adjusted for the on-rift lineup';
     const rosterTxt = rosterWarn.length
-      ? ` · <b style="color:#c60">roster change vs last rated game — ${rosterWarn.join('; ')} (Elo/form prior may be stale)</b>` : '';
+      ? ` · <b style="color:${anyUnadjusted ? '#c60' : '#976f00'}">roster change vs last rated game — ${rosterWarn.join('; ')} (${rosterNote})</b>` : '';
     document.getElementById('lv-line').innerHTML =
       `<b>${g.teams[0]}</b> (blue) vs <b>${g.teams[1]}</b> (red) · game ${g.number} · ${clock}${st.game_state === 'finished' ? ' · <b>FINAL</b>' : (st.game_state === 'paused' ? ' · PAUSED' : '')} — ` +
       `model <b style="color:#1652f0">P(${g.teams[0]}) = ${(st.p_blue*100).toFixed(1)}%</b> ` +

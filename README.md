@@ -77,9 +77,18 @@ same-frame scoreboard consistency alarm. It also compares each side's live
 lineup (feed summoner names, team tag stripped) against the roster from that
 team's most recent gol.gg game — the lineup its Elo/form prior actually
 describes — and shows a **roster change** warning naming who is in and who is
-out when they differ; the same comparison is stored with every prospective
-shadow forecast (`state.roster`), so flagged games can later be scored
-separately to measure what substitutions cost the prior.
+out when they differ. When a lineup differs, the model's player-Elo prior is
+**recomputed from the players actually on the rift**: per-player sequential
+Elo ratings are persisted at prep time (`oe_player_elo`, the same ratings
+whose per-game means train the `pelo` feature, so this only corrects the
+live approximation and needs no refit), live summoner names resolve against
+them (team tag stripped), and a side is adjusted when at least four of its
+five names resolve, unresolved players inheriting the team mean. Unchanged
+lineups keep the advanced team value, and teams missing from the rating
+tables entirely can still get a player-based prior when their players are
+known. The comparison and the adjustment are stored with every prospective
+shadow forecast (`state.roster`, `state.pelo_adjustment`), so flagged games
+can later be scored separately.
 A **Browse** picker below it (season → league → tournament → game, from the
 gol.gg tournament catalog; internationals/EMEA Masters under their own
 heading) lists each tournament's games; clicking a game loads its markets on
