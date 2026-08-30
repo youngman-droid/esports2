@@ -11,10 +11,11 @@ class TimeBasisTests(unittest.TestCase):
     def test_hat_basis_is_partition_of_unity(self):
         t = np.array([-5, 0, 5, 10, 17, 45, 80], dtype=float)
         b = wpgam.time_basis(t)
+        nk = len(wpgam.TIME_KNOTS)
         self.assertTrue(np.all(b >= 0))
         np.testing.assert_allclose(b.sum(axis=1), 1.0)
-        np.testing.assert_allclose(b[1], [1, 0, 0, 0, 0])
-        np.testing.assert_allclose(b[-1], [0, 0, 0, 0, 1])
+        np.testing.assert_allclose(b[1], np.eye(1, nk, 0)[0])
+        np.testing.assert_allclose(b[-1], np.eye(1, nk, nk - 1)[0])
 
     def test_historical_interpolation_never_reads_future_minute(self):
         series = {0: 10.0, 1: 20.0, 2: 1000.0}

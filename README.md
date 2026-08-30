@@ -279,6 +279,18 @@ Two outcome-based models evaluate drafts and events without any market data
   part of the fitted feature contract. Soul requires four non-Elder dragons;
   Elder kills are tracked separately and cannot accidentally satisfy Soul.
 
+  The time basis carries a sixth knot at 60 minutes: with the surface
+  clamped at 45 the model was overconfident in marathon games (calibration
+  slope 0.66 on the >45-minute slice, 177 of 98k test states); the extra
+  knot improves that slice (slope 0.70, Brier 0.229 → 0.221) at exactly
+  zero overall cost (paired delta −0.00001). The residual tail
+  overconfidence comes from the champscale blend component's linear time
+  features and is accepted. A related audit check — slight blend
+  overconfidence on the top-20% champion-effect games (slope 0.938) — has a
+  game-block 95% interval of 0.84–1.05 and is therefore unconfirmed; live
+  frames now record `lo_champ_state` so the shadow ledger can answer it
+  prospectively instead.
+
   The v7 contract adds the **champion-state channel**: per-champion
   coefficients estimated champscale-style on in-game states — jointly with
   the full exploration feature set, entering as signed presence × min(t, 15

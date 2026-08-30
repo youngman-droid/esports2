@@ -39,7 +39,10 @@ MODEL_KIND = "wpgam_v7_champ_state"
 OUT_DIR = os.path.join(config.REPO_ROOT, "data", "wpx")
 MODEL_PATH = os.path.join(OUT_DIR, "model_live_gam.npz")
 
-TIME_KNOTS = np.array([0.0, 10.0, 20.0, 30.0, 45.0], dtype=np.float64)
+# The 60-min knot exists for the marathon tail: with the surface clamped at
+# 45 the model was badly overconfident past 45 minutes (calibration slope
+# 0.59 on that slice); the extra knot lets coefficients keep evolving there.
+TIME_KNOTS = np.array([0.0, 10.0, 20.0, 30.0, 45.0, 60.0], dtype=np.float64)
 STATE_L2 = 24.0
 STATE_SMOOTH = 70.0
 # Champion-state channel: per-champion coefficients fit champscale-style on

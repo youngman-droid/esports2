@@ -987,6 +987,10 @@ def estimate_series(conn, game_id, priors=None, since_ts=0, teams=None):
         st["p_blue"] = p; st["p_blue_no_champ"] = p0; st["game_state"] = f.get("gameState")
         st["lo_prior"] = pr["lo_prior"]; st["lo_state"] = pr["lo_state"]; st["lo_champ"] = pr["lo_champ"]; st["lo_time"] = pr["lo_time"]
         st["lo_deaths"] = pr.get("lo_deaths"); st["terminal_state"] = pr.get("terminal_state", False)
+        # recorded so the shadow ledger can split scores by champion-effect
+        # magnitude (the champ-heavy calibration check is unconfirmed on the
+        # backtest; the ledger will answer it prospectively)
+        st["lo_champ_state"] = pr.get("lo_champ_state")
         st["lo_baron_active"] = pr.get("lo_baron_active")
         st["lo_elder_active"] = pr.get("lo_elder_active")
         st["model_kind"] = pr.get("model_kind")
