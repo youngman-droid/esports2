@@ -166,6 +166,66 @@ class TeamNameTests(unittest.TestCase):
                             draft.norm_team("CTBC Flying Oyster"))
 
 
+class _SeqConn:
+    """Serves one prepared row set per execute() call, in order."""
+
+    def __init__(self, results):
+        self.results = list(results)
+
+    def execute(self, _query, _params=None):
+        self._current = self.results.pop(0)
+        return self
+
+    def fetchall(self):
+        return self._current
+
+    def __iter__(self):
+        return iter(self._current)
+
+
+class RosterAwarenessTests(unittest.TestCase):
+    def tearDown(self):
+        if hasattr(live._reference_roster, "_cache"):
+            del live._reference_roster._cache
+
+    def test_tagged_summoner_names_match_reference_roster(self):
+        matched, new, missing = live.match_lineup(
+            ["Thanatos", "Oddie", "Saint", "Hena", "Lyonz"],
+            ["LYON Thanatos", "LYON Oddie", "LYON Saint", "LYON Hena", "LYON Lyonz"])
+        self.assertEqual((len(matched), new, missing), (5, [], []))
+
+    def test_substitution_is_flagged(self):
+        matched, new, missing = live.match_lineup(
+            ["Blaber", "Berserker", "Jojopyun", "Thanatos", "VULCAN"],
+            ["C9 Blaber", "C9 Berserker", "C9 Jojopyun", "C9 Thanatos", "C9 Zven"])
+        self.assertEqual(new, ["C9 Zven"])
+        self.assertEqual(missing, ["VULCAN"])
+
+    def test_tagless_join_matches_by_suffix_but_short_names_do_not(self):
+        matched, new, missing = live.match_lineup(["Faker"], ["T1Faker"])
+        self.assertEqual((new, missing), ([], []))
+        matched, new, missing = live.match_lineup(["Bo"], ["XYZ Rambo"])
+        self.assertEqual(new, ["XYZ Rambo"])
+        self.assertEqual(missing, ["Bo"])
+
+    def test_roster_check_reports_per_side_changes(self):
+        games = [{"game_id": 7, "blue_team": "Alpha", "red_team": "Beta",
+                  "date": "2026-08-20"}]
+        alpha = [{"player": p} for p in ("A1", "A2", "A3", "A4", "A5")]
+        beta = [{"player": p} for p in ("B1", "B2", "B3", "B4", "B5")]
+        conn = _SeqConn([games, alpha, beta])
+        out = live.roster_check(
+            conn, ["Alpha", "Beta"],
+            ["ALP A1", "ALP A2", "ALP A3", "ALP A4", "ALP Sub9"],
+            ["BET B1", "BET B2", "BET B3", "BET B4", "BET B5"])
+        self.assertTrue(out["blue"]["changed"])
+        self.assertEqual(out["blue"]["new"], ["ALP Sub9"])
+        self.assertEqual(out["blue"]["missing"], ["A5"])
+        self.assertEqual(out["blue"]["reference_game_id"], 7)
+        self.assertFalse(out["red"]["changed"])
+        self.assertEqual(out["red"]["matched"], 5)
+
+
 class MarketResolutionTests(unittest.TestCase):
     def test_sponsor_alias_and_terminal_map_title_resolve_both_exchanges(self):
         self.assertEqual(draft.norm_team("Team Liquid Alienware"), "liquid")

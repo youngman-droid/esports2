@@ -73,7 +73,13 @@ polling cannot add information.
 Player deaths are read from the window frame's `currentHealth` values (the
 details payload does not contain health). The panel prints those exact model
 inputs, their learned log-odds contribution, a late mass-death warning, and a
-same-frame scoreboard consistency alarm.
+same-frame scoreboard consistency alarm. It also compares each side's live
+lineup (feed summoner names, team tag stripped) against the roster from that
+team's most recent gol.gg game — the lineup its Elo/form prior actually
+describes — and shows a **roster change** warning naming who is in and who is
+out when they differ; the same comparison is stored with every prospective
+shadow forecast (`state.roster`), so flagged games can later be scored
+separately to measure what substitutions cost the prior.
 A **Browse** picker below it (season → league → tournament → game, from the
 gol.gg tournament catalog; internationals/EMEA Masters under their own
 heading) lists each tournament's games; clicking a game loads its markets on

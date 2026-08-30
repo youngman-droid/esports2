@@ -1191,11 +1191,19 @@ async function lvRefresh(){
       blendTxt = ` · <span class="muted">historical blend not deployed${delta == null ? '' : ` (holdout Brier ${delta >= 0 ? '+' : ''}${delta.toFixed(5)} vs model)`}; model remains independent</span>`;
     }
     const terminalTxt = st.terminal_state ? ` · <b style="color:#c22">late mass-death state</b>` : '';
+    const rosterWarn = [];
+    for (const [side, teamName] of [['blue', g.teams[0]], ['red', g.teams[1]]]){
+      const rc = (d.roster || {})[side];
+      if (rc && rc.available && rc.changed)
+        rosterWarn.push(`${teamName}: ${rc.new.join('/')} in for ${rc.missing.join('/')}`);
+    }
+    const rosterTxt = rosterWarn.length
+      ? ` · <b style="color:#c60">roster change vs last rated game — ${rosterWarn.join('; ')} (Elo/form prior may be stale)</b>` : '';
     document.getElementById('lv-line').innerHTML =
       `<b>${g.teams[0]}</b> (blue) vs <b>${g.teams[1]}</b> (red) · game ${g.number} · ${clock}${st.game_state === 'finished' ? ' · <b>FINAL</b>' : (st.game_state === 'paused' ? ' · PAUSED' : '')} — ` +
       `model <b style="color:#1652f0">P(${g.teams[0]}) = ${(st.p_blue*100).toFixed(1)}%</b> ` +
       `<span class="muted">(same model, champions removed ${(st.p_blue_no_champ*100).toFixed(1)}%)</span>` +
-      (mkTxt ? ` · market: ${mkTxt}` : ' · market: n/a (no map market listed)') + blendTxt + terminalTxt;
+      (mkTxt ? ` · market: ${mkTxt}` : ' · market: n/a (no map market listed)') + blendTxt + terminalTxt + rosterTxt;
     const stateEl = document.getElementById('lv-state');
     const objectiveTimer = (side, seconds) => seconds > 0 ? `${side} active ${Math.floor(seconds/60)}:${String(Math.ceil(seconds%60)).padStart(2,'0')}` : null;
     const activeBarons = [objectiveTimer(g.teams[0], Number(st.baron_timer_blue_s || 0)), objectiveTimer(g.teams[1], Number(st.baron_timer_red_s || 0))].filter(Boolean);

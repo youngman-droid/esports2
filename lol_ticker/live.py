@@ -443,6 +443,100 @@ def team_priors(conn, teams):
     return out
 
 
+# ------------------------------------------------------------ roster awareness
+#
+# The team prior describes the lineup that played the team's LAST rated game;
+# a substitution today makes that prior stale.  Compare the live feed's
+# summoner names against that reference roster and flag the difference.
+
+def _norm_player(name):
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def match_lineup(reference_players, live_names):
+    """Match feed summoner names ("C9 Blaber") to gol.gg player names.
+
+    A live name matches a reference player when they are equal after
+    normalization, equal once the leading team tag token is stripped, or —
+    as a last resort for unusual tag joins — when the reference name (4+
+    chars, to avoid short-name collisions) is a suffix of the live name.
+    Returns (matched_reference_names, new_live_names, missing_reference_names).
+    """
+    ref = {_norm_player(p): p for p in reference_players if p}
+    matched, new = {}, []
+    for name in live_names or []:
+        tokens = str(name or "").split()
+        cands = {_norm_player(name)}
+        if len(tokens) > 1:
+            cands.add(_norm_player(" ".join(tokens[1:])))
+        cands.discard("")
+        hit = next((r for r in ref if r in cands), None)
+        if hit is None:
+            hit = next((r for r in ref
+                        if len(r) >= 4 and any(c.endswith(r) for c in cands)),
+                       None)
+        if hit is not None and hit not in matched:
+            matched[hit] = name
+        elif name:
+            new.append(name)
+    missing = [ref[r] for r in ref if r not in matched]
+    return sorted(matched.values()), new, missing
+
+
+def _reference_roster(conn, team):
+    """(game_id, date, [player names]) of the team's newest gol.gg game."""
+    from .draft import norm_team
+    nt = norm_team(team)
+    now = time.time()
+    cached = getattr(_reference_roster, "_cache", None)
+    if not cached or now - cached["at"] > 600:
+        cached = {"at": now, "teams": {}, "games": conn.execute(
+            """SELECT game_id, blue_team, red_team, date FROM golgg_games
+               WHERE date > now() - interval '120 days'
+               ORDER BY date DESC, match_id DESC, game_num DESC""").fetchall()}
+        _reference_roster._cache = cached
+    if nt in cached["teams"]:
+        return cached["teams"][nt]
+    ref = None
+    for g in cached["games"]:
+        blue = norm_team(g["blue_team"]) == nt
+        if not blue and norm_team(g["red_team"]) != nt:
+            continue
+        side = "blue" if blue else "red"
+        players = [r["player"] for r in conn.execute(
+            """SELECT player FROM golgg_players
+               WHERE game_id=%s AND side=%s ORDER BY slot""",
+            (g["game_id"], side))]
+        if players:
+            ref = {"game_id": g["game_id"], "date": str(g["date"]),
+                   "players": players}
+        break
+    cached["teams"][nt] = ref
+    return ref
+
+
+def roster_check(conn, teams, blue_players, red_players):
+    """Per-side lineup comparison against each team's last rated roster."""
+    out = {}
+    for side, team, names in (("blue", teams[0], blue_players),
+                              ("red", teams[1], red_players)):
+        ref = _reference_roster(conn, team)
+        if not ref or not names:
+            out[side] = {"available": False, "team": team}
+            continue
+        matched, new, missing = match_lineup(ref["players"], names)
+        changed = bool(new) and bool(missing)
+        out[side] = {"available": True, "team": team, "changed": changed,
+                     "matched": len(matched), "new": new, "missing": missing,
+                     "reference_game_id": ref["game_id"],
+                     "reference_date": ref["date"]}
+        if changed:
+            log.warning("roster change for %s: %s in, %s out "
+                        "(prior reflects gol.gg game %s on %s)",
+                        team, new, missing, ref["game_id"], ref["date"])
+    return out
+
+
 # -------------------------------------------------------- 1 Hz frame series
 
 _cache = {}   # game_id -> {"t0", "md", "champs_b", "champs_r", "item_gold", "seen": set(), "markets": (ts, val), "priors"}

@@ -836,6 +836,11 @@ def api_live_series(params):
                 _live_mk_cache.pop(g["game_id"], None)
                 priors = live.team_priors(conn, g["teams"])
                 r = live.estimate_series(conn, g["game_id"], {k: v for k, v in priors.items() if k in live.PRIOR_KEYS}, since)
+            sb = r.get("scoreboard") or []
+            r["roster"] = live.roster_check(
+                conn, g["teams"],
+                [x.get("player") for x in sb if x.get("side") == "blue"],
+                [x.get("player") for x in sb if x.get("side") == "red"])
         except Exception as e:
             conn.rollback()
             return {"error": "feed/model failed: %s" % e}

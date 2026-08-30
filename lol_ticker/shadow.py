@@ -331,6 +331,14 @@ def _record_game(conn, protocol, game, versions):
     state["blue_champs"] = estimate.get("blue_champs") or []
     state["red_champs"] = estimate.get("red_champs") or []
     state["priors"] = priors
+    try:
+        sb = estimate.get("scoreboard") or []
+        state["roster"] = live.roster_check(
+            conn, oriented["teams"],
+            [x.get("player") for x in sb if x.get("side") == "blue"],
+            [x.get("player") for x in sb if x.get("side") == "red"])
+    except Exception as exc:  # diagnostic only; never blocks a capture
+        state["roster"] = {"error": str(exc)}
     if blend_error:
         state["blend_error"] = blend_error
     conn.execute(
