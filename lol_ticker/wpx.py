@@ -928,7 +928,7 @@ PRIOR_FEATURES = {"elo_oe", "pelo_oe", "form_diff", "elo_gg", "draft", "rapm_tea
 # Live priors are clipped to the training 1st-99th percentile so an unusually
 # lopsided matchup (e.g. a new team with a 390-Elo gap and 0.1 vs 0.9 form)
 # doesn't linearly extrapolate the prior term beyond anything the fit has seen.
-PRIOR_CLIP = {"elo_oe": 0.9, "pelo_oe": 0.9, "form_diff": 0.6}
+PRIOR_CLIP = {"elo_oe": 0.9, "pelo_oe": 0.9, "form_diff": 0.6, "elo_gg": 0.9}
 
 
 def _predict_live_legacy(state, blue_champs=(), red_champs=(), path=LEGACY_LIVE_MODEL_PATH):

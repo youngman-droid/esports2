@@ -734,7 +734,8 @@ def api_live_estimate(params):
             del live.team_priors._cache
         priors = live.team_priors(conn, g["teams"])
         try:
-            r = live.estimate(conn, g["game_id"], priors, teams=g["teams"])
+            r = live.estimate(conn, g["game_id"], priors, teams=g["teams"],
+                              team_ids=g.get("team_ids"))
         except Exception as e:
             conn.rollback()
             return {"error": "feed/model failed: %s" % e}

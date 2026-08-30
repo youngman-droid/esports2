@@ -83,6 +83,30 @@ class FrameStateTests(unittest.TestCase):
             "barons": 0, "dragons": [],
         }
 
+    def test_missing_health_zeroes_hp_features_like_training(self):
+        # The feed omits health in the first minutes; training marks those
+        # states has_hp=0 with zeroed features, so live must not fabricate
+        # full-health values.
+        def team(side):
+            t = self._team(side, dead=0)
+            for p in t["participants"]:
+                del p["currentHealth"], p["maxHealth"]
+            return t
+        frame = {"rfc460Timestamp": "2026-08-29T00:01:00Z",
+                 "blueTeam": team("blue"), "redTeam": team("red")}
+        state = live._frame_state({}, frame, None, None, {},
+                                  live._ts("2026-08-29T00:00:00Z"))
+        self.assertEqual(state["has_hp"], 0.0)
+        self.assertEqual(state["hp_pool"], 0.0)
+        self.assertEqual(state["hp_low_b"], 0.0)
+        self.assertEqual(state["lvl_k"], 0.0)
+        self.assertEqual(state["dead_blue"], 0)
+
+    def test_legacy_prior_clip_covers_every_live_prior_channel(self):
+        from lol_ticker import wpx
+        for key in ("elo_oe", "pelo_oe", "form_diff", "elo_gg"):
+            self.assertIn(key, wpx.PRIOR_CLIP)
+
     def test_frame_deaths_come_from_window_health_not_details(self):
         frame = {
             "rfc460Timestamp": "2026-08-29T00:40:00Z",
@@ -207,6 +231,17 @@ class RosterAwarenessTests(unittest.TestCase):
         matched, new, missing = live.match_lineup(["Bo"], ["XYZ Rambo"])
         self.assertEqual(new, ["XYZ Rambo"])
         self.assertEqual(missing, ["Bo"])
+
+    def test_reference_roster_skips_games_without_player_rows(self):
+        games = [{"game_id": 9, "blue_team": "Alpha", "red_team": "Gamma",
+                  "date": "2026-08-25"},
+                 {"game_id": 7, "blue_team": "Alpha", "red_team": "Beta",
+                  "date": "2026-08-20"}]
+        alpha = [{"player": p} for p in ("A1", "A2", "A3", "A4", "A5")]
+        conn = _SeqConn([games, [], alpha])   # newest game has a scrape gap
+        ref = live._reference_roster(conn, "Alpha")
+        self.assertEqual(ref["game_id"], 7)
+        self.assertEqual(len(ref["players"]), 5)
 
     def test_roster_check_reports_per_side_changes(self):
         games = [{"game_id": 7, "blue_team": "Alpha", "red_team": "Beta",

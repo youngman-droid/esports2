@@ -84,6 +84,32 @@ def _ts(s):
     return dt.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
 
 
+def _hp_block(bt, rt):
+    """HP/level model features from window participants.
+
+    Mirrors the historical ``_hp_feats`` contract: the feed omits health in
+    the first minutes of a game, and training marks those states has_hp=0
+    with zeroed features — so live must do the same instead of fabricating
+    full-health values the model never saw in training.  The display arrays
+    keep the full-health assumption for the scoreboard.
+    """
+    have = all(p.get("maxHealth") for p in bt["participants"] + rt["participants"])
+    hpb = [(p["currentHealth"] / p["maxHealth"]) if p.get("maxHealth") else 1.0
+           for p in bt["participants"]]
+    hpr = [(p["currentHealth"] / p["maxHealth"]) if p.get("maxHealth") else 1.0
+           for p in rt["participants"]]
+    lvl_k = (sum(p.get("level", 0) for p in bt["participants"])
+             - sum(p.get("level", 0) for p in rt["participants"])) / 5.0
+    return {
+        "hp_pool": (sum(hpb) - sum(hpr)) if have else 0.0,
+        "hp_low_b": float(sum(1 for x in hpb if x < 0.3)) if have else 0.0,
+        "hp_low_r": float(sum(1 for x in hpr if x < 0.3)) if have else 0.0,
+        "lvl_k": lvl_k if have else 0.0,
+        "has_hp": 1.0 if have else 0.0,
+        "hp_blue": [round(x, 2) for x in hpb], "hp_red": [round(x, 2) for x in hpr],
+    }
+
+
 def fetch_state(game_id, item_gold=None):
     """Current game state from the feed (window + details), plus 2-min-earlier gold."""
     now = dt.datetime.now(dt.timezone.utc).timestamp()
@@ -105,9 +131,6 @@ def fetch_state(game_id, item_gold=None):
     bt2, rt2 = f2["blueTeam"], f2["redTeam"]
     roles = ["top", "jng", "mid", "bot", "sup"]
     gold_role = [(bt["participants"][i]["totalGold"] - rt["participants"][i]["totalGold"]) / 1000.0 for i in range(5)]
-    hpb = [(p_["currentHealth"] / p_["maxHealth"]) if p_.get("maxHealth") else 1.0 for p_ in bt["participants"]]
-    hpr = [(p_["currentHealth"] / p_["maxHealth"]) if p_.get("maxHealth") else 1.0 for p_ in rt["participants"]]
-    lvl_k = (sum(p_.get("level", 0) for p_ in bt["participants"]) - sum(p_.get("level", 0) for p_ in rt["participants"])) / 5.0
     det = dd["frames"][-1]["participants"]
     items_done = 0; item_gold_sum = 0.0
     if item_gold is not None:
@@ -153,14 +176,12 @@ def fetch_state(game_id, item_gold=None):
         "elders": elder_b - elder_r, "elders_blue": elder_b, "elders_red": elder_r,
         "dead_blue": dead_b, "dead_red": dead_r,
         "items_done_diff": items_done, "item_gold_diff_k": item_gold_sum / 1000.0,
-        "hp_pool": sum(hpb) - sum(hpr), "hp_low_b": float(sum(1 for x in hpb if x < 0.3)),
-        "hp_low_r": float(sum(1 for x in hpr if x < 0.3)), "lvl_k": lvl_k, "has_hp": 1.0,
-        "hp_blue": [round(x, 2) for x in hpb], "hp_red": [round(x, 2) for x in hpr],
+        **_hp_block(bt, rt),
     }
     return state
 
 
-def estimate(conn, game_id=None, priors=None, teams=None):
+def estimate(conn, game_id=None, priors=None, teams=None, team_ids=None):
     from . import wpx
     if game_id is None:
         lg = live_games()
@@ -169,10 +190,15 @@ def estimate(conn, game_id=None, priors=None, teams=None):
         game_id = lg[0]["game_id"]
         meta = lg[0]
         teams = teams or lg[0].get("teams")
+        team_ids = team_ids or lg[0].get("team_ids")
     else:
         meta = {"game_id": game_id}
     item_gold = {r["item_id"]: (r["gold"] or 0) for r in conn.execute("SELECT item_id, gold FROM golgg_items")}
     st = fetch_state(game_id, item_gold)
+    # the feed is the authority on sides: reorder the schedule's team names
+    # before roster matching when they disagree (the series path does the same)
+    if teams and team_ids and len(team_ids) == 2 and st.get("blue") == team_ids[1]:
+        teams = list(teams)[::-1]
     roster = pelo_adj = None
     if teams and priors:
         priors = lineup_adjusted_priors(conn, teams, priors,
@@ -519,7 +545,8 @@ def _reference_roster(conn, team):
         if players:
             ref = {"game_id": g["game_id"], "date": str(g["date"]),
                    "players": players}
-        break
+            break
+        # newest game has no player rows (scrape gap): try the next one
     cached["teams"][nt] = ref
     return ref
 
@@ -647,9 +674,6 @@ def _frame_state(md, f, f_prev, det, item_gold, t0, game_clock_s=None):
     bt, rt = f["blueTeam"], f["redTeam"]
     bt2, rt2 = (f_prev["blueTeam"], f_prev["redTeam"]) if f_prev else (bt, rt)
     gold_role = [(bt["participants"][i]["totalGold"] - rt["participants"][i]["totalGold"]) / 1000.0 for i in range(5)]
-    hpb = [(p_["currentHealth"] / p_["maxHealth"]) if p_.get("maxHealth") else 1.0 for p_ in bt["participants"]]
-    hpr = [(p_["currentHealth"] / p_["maxHealth"]) if p_.get("maxHealth") else 1.0 for p_ in rt["participants"]]
-    lvl_k = (sum(p_.get("level", 0) for p_ in bt["participants"]) - sum(p_.get("level", 0) for p_ in rt["participants"])) / 5.0
     dead_b = sum(1 for p in bt["participants"] if p.get("currentHealth", 1) <= 0)
     dead_r = sum(1 for p in rt["participants"] if p.get("currentHealth", 1) <= 0)
     items_done = 0; item_gold_sum = 0.0
@@ -685,9 +709,7 @@ def _frame_state(md, f, f_prev, det, item_gold, t0, game_clock_s=None):
         "elders": elder_b - elder_r, "elders_blue": elder_b, "elders_red": elder_r,
         "dead_blue": dead_b, "dead_red": dead_r,
         "items_done_diff": items_done, "item_gold_diff_k": item_gold_sum / 1000.0,
-        "hp_pool": sum(hpb) - sum(hpr), "hp_low_b": float(sum(1 for x in hpb if x < 0.3)),
-        "hp_low_r": float(sum(1 for x in hpr if x < 0.3)), "lvl_k": lvl_k, "has_hp": 1.0,
-        "hp_blue": [round(x, 2) for x in hpb], "hp_red": [round(x, 2) for x in hpr],
+        **_hp_block(bt, rt),
     }
 
 
