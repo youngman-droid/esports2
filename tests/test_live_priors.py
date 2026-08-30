@@ -135,10 +135,35 @@ class TeamNameTests(unittest.TestCase):
         self.assertEqual(draft.norm_team("Cloud9 Kia"), "cloud9")
         self.assertEqual(draft.norm_team("Cloud9"), "cloud9")
         self.assertEqual(draft.norm_team("Team Liquid Alienware"), "liquid")
+        # 2026-08-29 audit: feed name on the left, stored name on the right
+        self.assertEqual(draft.norm_team("NONGSHIM RED FORCE"),
+                         draft.norm_team("Nongshim RedForce"))
+        self.assertEqual(draft.norm_team("Relove Deep Cross Gaming"),
+                         draft.norm_team("Deep Cross Gaming"))
+        self.assertEqual(draft.norm_team("Beijing JDG Esports"),
+                         draft.norm_team("JD Gaming"))
+        self.assertEqual(draft.norm_team("AG.AL"),
+                         draft.norm_team("Anyone's Legend"))
+        self.assertEqual(draft.norm_team("Saigon Warrior"),
+                         draft.norm_team("Saigon Warriors"))
+        self.assertEqual(draft.norm_team("TP.HCM SN CyberCore Esports"),
+                         draft.norm_team("SN CyberCore Esports"))
+        self.assertEqual(draft.norm_team("Brod & Friends"),
+                         draft.norm_team("Brod n Friends"))
+        self.assertEqual(draft.norm_team("KaBuM! Eports"),
+                         draft.norm_team("KaBuM! Esports"))
+        self.assertEqual(draft.norm_team("DK Challengers"),
+                         draft.norm_team("Dplus KIA Challengers"))
 
     def test_academy_rosters_stay_distinct(self):
         self.assertNotEqual(draft.norm_team("LYON Academy"),
                             draft.norm_team("LYON"))
+        self.assertNotEqual(draft.norm_team("NONGSHIM RED FORCE"),
+                            draft.norm_team("Nongshim RedForce Academy"))
+        self.assertNotEqual(draft.norm_team("NS Challengers"),
+                            draft.norm_team("Nongshim RedForce"))
+        self.assertNotEqual(draft.norm_team("CTBC Flying Oyster Academy"),
+                            draft.norm_team("CTBC Flying Oyster"))
 
 
 class MarketResolutionTests(unittest.TestCase):

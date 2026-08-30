@@ -87,6 +87,22 @@ _TEAM_ALIASES = {
     # A missed alias here silently zeroes every team prior for the match
     # (team_priors logs a warning when that happens).
     "cloud9 kia": "cloud9",
+    # 2026-08-29 audit of every current feed name vs gol.gg/OE coverage
+    # (scratch: team_audit).  Keys are the feed name's norm, values the
+    # stored name's norm.  Never map an Academy/Challengers roster onto its
+    # main team.
+    "nongshim red force": "nongshim redforce",          # LCK
+    "relove deep cross": "deep cross",                  # LCP (sponsor prefix)
+    "beijing jdg": "jd",                                # EWC name for JD Gaming
+    "ag al": "anyone s legend",                         # EWC name for Anyone's Legend
+    "saigon warrior": "saigon warriors",                # VCS (feed drops the s)
+    "tp hcm sn cybercore": "sn cybercore",              # VCS (city sponsor prefix)
+    "brod friends": "brod n friends",                   # NLC ("&" vs "n")
+    "kabum eports": "kabum",                            # CBLOL feed typo of Esports
+    "bro challengers": "hanjin brion challengers",      # LCK Challengers tags
+    "dk challengers": "dplus kia challengers",
+    "dns challengers": "dn soopers challengers",
+    "ns challengers": "nongshim academy",
 }
 
 
