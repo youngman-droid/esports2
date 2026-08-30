@@ -83,6 +83,10 @@ _TEAM_ALIASES = {
     # The official schedule carries the current title sponsor, while both
     # exchanges and most historical sources continue to use Team Liquid.
     "liquid alienware": "liquid",
+    # Same pattern: the live feed says "Cloud9 Kia", gol.gg/OE say "Cloud9".
+    # A missed alias here silently zeroes every team prior for the match
+    # (team_priors logs a warning when that happens).
+    "cloud9 kia": "cloud9",
 }
 
 

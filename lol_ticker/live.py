@@ -421,6 +421,14 @@ def team_priors(conn, teams):
     nb, nr = norm_team(teams[0]), norm_team(teams[1])
     oe_found = nb in vals and nr in vals
     gg_found = nb in gg_vals and nr in gg_vals
+    missing = [t for t, n in zip(teams, (nb, nr))
+               if n not in vals and n not in gg_vals]
+    if missing:
+        # Usually a sponsor-name mismatch (fix via draft._TEAM_ALIASES);
+        # without it the model silently treats the teams as even.
+        log.warning("team_priors: no OE/gol.gg rating match for %s "
+                    "(normalized %s)", missing,
+                    [norm_team(t) for t in missing])
     if not oe_found and not gg_found:
         return {"found": False}
     out = {"found": True, "oe_found": oe_found, "gg_found": gg_found,

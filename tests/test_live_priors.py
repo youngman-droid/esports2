@@ -130,6 +130,17 @@ class FrameStateTests(unittest.TestCase):
         self.assertFalse(state["soul_blue"])
 
 
+class TeamNameTests(unittest.TestCase):
+    def test_sponsor_aliases_fold_to_canonical_names(self):
+        self.assertEqual(draft.norm_team("Cloud9 Kia"), "cloud9")
+        self.assertEqual(draft.norm_team("Cloud9"), "cloud9")
+        self.assertEqual(draft.norm_team("Team Liquid Alienware"), "liquid")
+
+    def test_academy_rosters_stay_distinct(self):
+        self.assertNotEqual(draft.norm_team("LYON Academy"),
+                            draft.norm_team("LYON"))
+
+
 class MarketResolutionTests(unittest.TestCase):
     def test_sponsor_alias_and_terminal_map_title_resolve_both_exchanges(self):
         self.assertEqual(draft.norm_team("Team Liquid Alienware"), "liquid")
