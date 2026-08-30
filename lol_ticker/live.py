@@ -731,7 +731,8 @@ def _new_cache(conn, md, t0):
                      "baron_seeded": False, "baron_counts": None,
                      "last_baron_clock": [None, None],
                      "elder_seeded": False, "elder_counts": None,
-                     "last_elder_clock": [None, None]}}
+                     "last_elder_clock": [None, None],
+                     "kill_seeded": False, "last_kill_clock": None}}
 
 
 def _baron_counts(frame):
@@ -743,6 +744,11 @@ def _elder_counts(frame):
     def count(team):
         return sum(str(d).lower() == "elder" for d in team.get("dragons", []))
     return [count(frame["blueTeam"]), count(frame["redTeam"])]
+
+
+def _total_kills(frame):
+    return (int(frame["blueTeam"].get("totalKills", 0) or 0)
+            + int(frame["redTeam"].get("totalKills", 0) or 0))
 
 
 def _baron_probe(game_id, ts):
@@ -806,6 +812,37 @@ def _seed_recent_baron_clocks(game_id, frame, game_clock, t0):
 def _seed_recent_elder_clocks(game_id, frame, game_clock, t0):
     return _seed_recent_objective_clocks(
         game_id, frame, game_clock, t0, 150.0, _elder_counts)
+
+
+def _seed_recent_kill_clock(game_id, frame, game_clock, t0):
+    """Recover the latest kill time when live scoring joins mid-game.
+
+    ``t_since_kill`` is capped at ten minutes.  Probe that window and locate the
+    transition to the current cumulative kill count, so a process restart does
+    not incorrectly report ten quiet minutes until the next kill.
+    """
+    current_ts = _ts(frame["rfc460Timestamp"])
+    target = _total_kills(frame)
+    if target <= 0:
+        return None
+    lower_ts = max(float(t0), current_ts - 600.0)
+    lower = _baron_probe(game_id, lower_ts)
+    if lower is None or _total_kills(lower) >= target:
+        return None
+    lo, hi = lower_ts, current_ts
+    for _ in range(8):
+        if hi - lo <= 10.0:
+            break
+        mid = (lo + hi) / 2.0
+        probe = _baron_probe(game_id, mid)
+        if probe is None:
+            break
+        probe_ts = _ts(probe["rfc460Timestamp"])
+        if _total_kills(probe) >= target:
+            hi = min(hi, probe_ts)
+        else:
+            lo = max(lo, probe_ts)
+    return max(0.0, float(game_clock) - (current_ts - hi))
 
 
 def _update_timed_objective(prev, frame, game_clock, seeded_clocks,
@@ -940,6 +977,15 @@ def estimate_series(conn, game_id, priors=None, since_ts=0, teams=None):
     det_by_ts = {int(_ts(f["rfc460Timestamp"])): f for f in (dd or {}).get("frames", [])}
     prev_by_ts = {int(_ts(f["rfc460Timestamp"])): f for f in w_prev.get("frames", [])
                   if _ts(f["rfc460Timestamp"]) >= c["t0"]}
+    prev = c["prev"]
+    if not prev.get("kill_seeded") and w.get("frames"):
+        seed_frame = w["frames"][0]
+        seed_clock = max(0.0, _ts(seed_frame["rfc460Timestamp"]) - c["t0"]
+                         - prev.get("pause_s", 0.0))
+        prev["last_kill_clock"] = _seed_recent_kill_clock(
+            game_id, seed_frame, seed_clock, c["t0"])
+        prev["kills"] = _total_kills(seed_frame)
+        prev["kill_seeded"] = True
     out = []
     seen_this_call = set()   # the feed emits several sub-second frames; keep one per second
     for f in w.get("frames", []):
@@ -948,7 +994,6 @@ def estimate_series(conn, game_id, priors=None, since_ts=0, teams=None):
             continue
         seen_this_call.add(ts)
         f_prev = prev_by_ts.get(ts - 120) or (next(iter(prev_by_ts.values()), None) if prev_by_ts else None)
-        prev = c["prev"]
         last_ts = prev.get("last_frame_ts")
         if last_ts is not None and prev.get("last_game_state") == "paused":
             prev["pause_s"] = prev.get("pause_s", 0.0) + max(0, ts - last_ts)
@@ -993,6 +1038,9 @@ def estimate_series(conn, game_id, priors=None, since_ts=0, teams=None):
         st["lo_champ_state"] = pr.get("lo_champ_state")
         st["lo_baron_active"] = pr.get("lo_baron_active")
         st["lo_elder_active"] = pr.get("lo_elder_active")
+        st["model_input_warnings"] = pr.get("input_warnings") or []
+        st["model_clipped_inputs"] = pr.get("clipped_inputs") or []
+        st["model_reliability"] = pr.get("reliability", "normal")
         st["model_kind"] = pr.get("model_kind")
         out.append(st)
     out.sort(key=lambda x: x["ts"])

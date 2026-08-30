@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import re
+import hashlib
 import time
 import urllib.request
 
@@ -340,8 +341,8 @@ def _interp(series_by_min, t_s, f):
     return f(series_by_min[max(observed)])
 
 
-def _hp_feats(hpmap, t_s):
-    """Latest HP feed observation at or before ``t_s`` (max age 90 s).
+def _hp_observation(hpmap, t_s):
+    """Latest HP/death observation at or before ``t_s`` (max age 90 s).
 
     New builds attach an exact game-clock timestamp to each row.  The fallback
     for old callers is previous-minute-only; neither path can select m+1.
@@ -361,9 +362,21 @@ def _hp_feats(hpmap, t_s):
             lvb, lvr = row.get("lvb") or [], row.get("lvr") or []
             if len(hpb) == 5 and len(hpr) == 5:
                 lvl = (sum(lvb) - sum(lvr)) / 5.0 if len(lvb) == 5 and len(lvr) == 5 else 0.0
-                return [sum(hpb) - sum(hpr), float(sum(1 for x in hpb if x < 0.3)),
-                        float(sum(1 for x in hpr if x < 0.3)), lvl, 1.0]
-    return [0.0, 0.0, 0.0, 0.0, 0.0]
+                return {
+                    "features": [sum(hpb) - sum(hpr),
+                                 float(sum(1 for x in hpb if x < 0.3)),
+                                 float(sum(1 for x in hpr if x < 0.3)),
+                                 lvl, 1.0],
+                    "dead_blue": int(sum(x <= 0.0 for x in hpb)),
+                    "dead_red": int(sum(x <= 0.0 for x in hpr)),
+                }
+    return {"features": [0.0, 0.0, 0.0, 0.0, 0.0],
+            "dead_blue": None, "dead_red": None}
+
+
+def _hp_feats(hpmap, t_s):
+    """Backward-compatible HP feature-only view."""
+    return _hp_observation(hpmap, t_s)["features"]
 
 
 def _state(g, gold, cs, ev, items, idx, t_s, hpmap=None):
@@ -415,6 +428,11 @@ def _state(g, gold, cs, ev, items, idx, t_s, hpmap=None):
                 vs = e.get("victim_side")
                 if vs in ("blue", "red"):
                     dead[0 if vs == "blue" else 1] += 1
+    hp = _hp_observation(hpmap, t_s)
+    # When official-feed health is available it is the same source used live
+    # and is strictly better than the historical approximate respawn window.
+    if hp["dead_blue"] is not None:
+        dead = [hp["dead_blue"], hp["dead_red"]]
     soul = (1 if drag[0] >= 4 else 0) - (1 if drag[1] >= 4 else 0)
     baron_active = (1 if t_s - last_baron["blue"] <= 180 else 0) - (1 if t_s - last_baron["red"] <= 180 else 0)
     items_done = 0; item_gold = 0.0
@@ -453,7 +471,7 @@ def _state(g, gold, cs, ev, items, idx, t_s, hpmap=None):
           (g.get("form_red") if g.get("form_red") is not None else 0.5)),
          (math.log1p(g.get("ngames_blue") or 0) - math.log1p(g.get("ngames_red") or 0)),
          baron_up, dragon_up, baron_up * dead_diff, dead_diff * t / 30.0,
-         (g.get("rapm_team") or 0.0) / 100.0, (g.get("rapm_player") or 0.0) / 100.0] + _hp_feats(hpmap, t_s)
+         (g.get("rapm_team") or 0.0) / 100.0, (g.get("rapm_player") or 0.0) / 100.0] + hp["features"]
     return x
 
 
@@ -489,6 +507,7 @@ def build(conn, sample_every_s=60):
             hp_all.setdefault(r["esports_game_id"], {})[r["minute"]] = wrapped
         log.info("wpx: HP feed minutes for %d games", len(hp_all))
     X, y, gid_arr, t_arr, seq_arr, pm_arr, ks_arr, date_arr = [], [], [], [], [], [], [], []
+    patch_arr, league_arr = [], []
     C = []   # champion ids per state: 10 slots (blue 0-4, red 5-9)
     champ_ids = {}
     t0 = time.time()
@@ -514,6 +533,8 @@ def build(conn, sample_every_s=60):
             C.append([champ_ids.setdefault(c, len(champ_ids)) for c in (g.get("champs") or [])][:10] + [-1] * (10 - len(g.get("champs") or [])))
             y.append(won); gid_arr.append(gid); t_arr.append(t_s); seq_arr.append(seq)
             date_arr.append(str(g.get("date") or ""))
+            patch_arr.append(str(g.get("patch") or ""))
+            league_arr.append(str(g.get("trname") or ""))
             m = mk.get((gid, seq)) if seq >= 0 else None
             pm_arr.append(np.mean(m["polymarket"]) if m and "polymarket" in m else np.nan)
             ks_arr.append(np.mean(m["kalshi"]) if m and "kalshi" in m else np.nan)
@@ -523,6 +544,7 @@ def build(conn, sample_every_s=60):
     np.savez_compressed(path, X=np.array(X, dtype=np.float32), y=np.array(y, dtype=np.float32),
                         gid=np.array(gid_arr), t=np.array(t_arr), seq=np.array(seq_arr),
                         date=np.array(date_arr),
+                        patch=np.array(patch_arr), league=np.array(league_arr),
                         pm=np.array(pm_arr, dtype=np.float32), ks=np.array(ks_arr, dtype=np.float32),
                         names=np.array(FEATURE_NAMES), C=np.array(C, dtype=np.int16),
                         champ_names=np.array([c for c, _ in sorted(champ_ids.items(), key=lambda kv: kv[1])]))
@@ -799,74 +821,207 @@ def report(results):
 
 # -------------------------------------------------------------- live use
 
-# The optimized live blend and prospective shadow protocol declare wpgam_v2 as
-# their base-model contract.  Keep the legacy artifact for explicit comparison
-# and as a missing-artifact fallback, but production live scores must use the
-# same constrained GAM that the blend was trained against.
+# Production always starts from the versioned constrained GAM.  A legacy
+# comparator can enter only through a content-addressed wpdeploy manifest whose
+# live-contract, chronological and forward-holdout gates all passed.
 LEGACY_LIVE_MODEL_PATH = os.path.join(OUT_DIR, "model_live.npz")
 GAM_LIVE_MODEL_PATH = os.path.join(OUT_DIR, "model_live_gam.npz")
 LIVE_MODEL_PATH = GAM_LIVE_MODEL_PATH
+LIVE_STACK_PATH = os.path.join(OUT_DIR, "live_stack.json")
+LEGACY_LIVE_CONTRACT = "champscale_live_v2"
+# Historical WPX columns that the official live window/details feeds cannot
+# construct.  The old artifact fitted these columns and silently supplied zero
+# at inference, so its retrospective score did not describe the deployed
+# predictor.  Keep the exclusion list explicit and versioned.
+LEGACY_LIVE_EXCLUDED = {
+    "draft", "d_herald", "d_grubs", "d_atakhan", "d_plate", "kills_2m",
+    "nexus_tw_blue", "nexus_tw_red", "exp_diff", "baron_up", "dragon_up",
+    "baron_up_x_dead", "rapm_team", "rapm_player",
+}
+
+
+def _legacy_columns(names):
+    rich = [i for i, n in enumerate(names) if str(n) not in LEGACY_LIVE_EXCLUDED]
+    xcols = [i for i in rich if str(names[i]) not in ALREADY_INTERACTED
+             and str(names[i]) != "bias"]
+    return rich, xcols
+
+
+def _legacy_design(X, C, names, rich_cols, xcols, n_champs,
+                   t_cap=15 / 30.0):
+    """Exact matrix shared by retrospective fitting and live inference."""
+    X = np.asarray(X)
+    t_col = list(names).index("t")
+    B = X[:, rich_cols].astype(np.float64)
+    t_raw = X[:, t_col:t_col + 1].astype(np.float64)
+    tt = np.minimum(t_raw, float(t_cap))
+    S = np.zeros((len(X), n_champs), dtype=np.float64)
+    Cm = np.asarray(C)
+    rows = np.arange(len(X))
+    for k in range(min(10, Cm.shape[1])):
+        ids = Cm[:, k].astype(int)
+        ok = (ids >= 0) & (ids < n_champs)
+        S[rows[ok], ids[ok]] += (1.0 if k < 5 else -1.0) * tt[ok, 0]
+    return np.hstack([B, X[:, xcols].astype(np.float64) * t_raw, S])
+
+
+def _legacy_game_weights(gids):
+    _, inv, counts = np.unique(np.asarray(gids), return_inverse=True,
+                               return_counts=True)
+    weights = 1.0 / counts[inv]
+    return weights / weights.mean()
+
+
+def fit_legacy_arrays(X, y, gid, C, names, champ_names, rows=None,
+                      l2=1.0, l2_champ=800.0, t_cap=15 / 30.0):
+    """Fit the legacy champion-time model under its real live contract.
+
+    Each game has equal total loss weight, regardless of duration or number of
+    event-anchored rows.  Returned metadata makes convergence auditable.
+    """
+    X, y, gid, C = map(np.asarray, (X, y, gid, C))
+    rows = np.arange(len(y)) if rows is None else np.asarray(rows)
+    names, champ_names = list(names), list(champ_names)
+    rich_cols, xcols = _legacy_columns(names)
+    A = _legacy_design(X[rows], C[rows], names, rich_cols, xcols,
+                       len(champ_names), t_cap=t_cap)
+    target = y[rows].astype(np.float64)
+    weights = _legacy_game_weights(gid[rows])
+    beta = np.zeros(A.shape[1])
+    reg = np.full(A.shape[1], float(l2))
+    reg[0] = 0.0
+    if champ_names:
+        reg[-len(champ_names):] = float(l2_champ)
+    converged = False
+    iterations = 0
+    for iterations in range(1, 31):
+        p = _sigmoid(A @ beta)
+        curvature = weights * (p * (1.0 - p) + 1e-9)
+        step = np.linalg.solve(
+            (A * curvature[:, None]).T @ A + np.diag(reg),
+            A.T @ (weights * (p - target)) + reg * beta)
+        beta -= step
+        if np.max(np.abs(step)) < 1e-6:
+            converged = True
+            break
+    if not np.all(np.isfinite(beta)):
+        raise FloatingPointError("legacy live-contract fit returned non-finite coefficients")
+    return {
+        "beta": beta, "names": np.asarray(names),
+        "rich_cols": np.asarray(rich_cols), "xcols": np.asarray(xcols),
+        "champ_names": np.asarray(champ_names), "t_cap": float(t_cap),
+        "contract": LEGACY_LIVE_CONTRACT, "game_balanced": True,
+        "converged": converged, "iterations": iterations,
+        "l2": float(l2), "l2_champ": float(l2_champ),
+    }
+
+
+def predict_legacy_arrays(model, X, C):
+    A = _legacy_design(
+        X, C, list(model["names"]), list(model["rich_cols"]),
+        list(model["xcols"]), len(model["champ_names"]), model["t_cap"])
+    return _sigmoid(A @ model["beta"])
+
+
+def save_legacy_model(model, path=LEGACY_LIVE_MODEL_PATH):
+    payload = {k: np.asarray(v) for k, v in model.items()}
+    np.savez_compressed(path, **payload)
+    return path
+
+
+def _file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def legacy_artifact_usable(path=LEGACY_LIVE_MODEL_PATH):
+    if not os.path.exists(path):
+        return False
+    try:
+        with np.load(path, allow_pickle=False) as model:
+            return ("contract" in model.files
+                    and str(model["contract"].item()) == LEGACY_LIVE_CONTRACT
+                    and bool(model["game_balanced"].item())
+                    and bool(model["converged"].item()))
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def load_live_stack(path=LIVE_STACK_PATH, gam_path=GAM_LIVE_MODEL_PATH,
+                    legacy_path=LEGACY_LIVE_MODEL_PATH):
+    """Load and verify the promoted stack; invalid manifests fail to GAM-only."""
+    fallback = {"deployed": False, "w_gam": 1.0, "reason": "no valid stack manifest"}
+    if not os.path.exists(path):
+        return fallback
+    try:
+        with open(path) as fh:
+            stack = json.load(fh)
+        if stack.get("kind") != "wpx_live_stack_v1" or not stack.get("deployed"):
+            return {**fallback, "reason": stack.get("reason", "stack gate rejected")}
+        claimed = stack.get("stack_sha256")
+        unsigned = {k: v for k, v in stack.items() if k != "stack_sha256"}
+        actual = hashlib.sha256(json.dumps(
+            unsigned, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if claimed != actual:
+            return {**fallback, "reason": "stack manifest checksum mismatch"}
+        if not legacy_artifact_usable(legacy_path):
+            return {**fallback, "reason": "legacy artifact is not live-contract compatible"}
+        expected = stack.get("components") or {}
+        if expected.get("gam_sha256") != _file_sha256(gam_path):
+            return {**fallback, "reason": "GAM hash does not match stack manifest"}
+        if expected.get("legacy_sha256") != _file_sha256(legacy_path):
+            return {**fallback, "reason": "legacy hash does not match stack manifest"}
+        weight = float(stack["w_gam"])
+        if not 0.0 <= weight <= 1.0:
+            return {**fallback, "reason": "invalid GAM blend weight"}
+        return stack
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        return {**fallback, "reason": "invalid stack manifest: %s" % exc}
 
 
 def fit_full_legacy(l2=1.0, l2_champ=800.0, t_cap=15 / 30.0,
-                    path=LEGACY_LIVE_MODEL_PATH):
-    """Fit the best exploration model (xt + champion scaling) on ALL states and
-    save coefficients + feature/champion vocab for live prediction."""
-    d = np.load(os.path.join(OUT_DIR, "states.npz"), allow_pickle=True)
-    X, y, names, C = d["X"], d["y"], list(d["names"]), d["C"]
-    champ_names = list(d["champ_names"])
-    n_champs = len(champ_names)
+                    path=LEGACY_LIVE_MODEL_PATH, dataset_path=None):
+    """Fit the live-contract champion-time comparator on all available games."""
+    dataset_path = dataset_path or os.path.join(OUT_DIR, "states.npz")
+    d = np.load(dataset_path, allow_pickle=True)
+    model = fit_legacy_arrays(
+        d["X"], d["y"], d["gid"], d["C"], list(d["names"]),
+        list(d["champ_names"]), rows=np.where(d["seq"] < 0)[0],
+        l2=l2, l2_champ=l2_champ, t_cap=t_cap)
+    save_legacy_model(model, path)
+    # Diagnostic direct coefficient (the full live gold sweep also includes
+    # relative gold and role allocation and is checked by the stack gate).
+    names = list(model["names"]); rich_cols = list(model["rich_cols"])
+    xcols = list(model["xcols"]); beta = model["beta"]
     idx = {n: i for i, n in enumerate(names)}
-    rich_cols = [i for i, n in enumerate(names) if n != "draft"]
-    xcols = [i for i in rich_cols if names[i] not in ALREADY_INTERACTED and names[i] != "bias"]
-    t_col = idx["t"]
-
-    def expand(Xm, Cm):
-        B = Xm[:, rich_cols].astype(np.float64)
-        t_raw = Xm[:, t_col:t_col + 1].astype(np.float64)
-        tt = np.minimum(t_raw, t_cap)
-        S = np.zeros((len(Xm), n_champs))
-        for k in range(10):
-            sgn = 1.0 if k < 5 else -1.0
-            ids = Cm[:, k]; ok = ids >= 0
-            S[np.where(ok)[0], ids[ok]] += sgn * tt[ok, 0]
-        return np.hstack([B, Xm[:, xcols].astype(np.float64) * t_raw, S])
-
-    A = expand(X, C)
-    beta = np.zeros(A.shape[1]); reg = np.full(A.shape[1], l2); reg[0] = 0; reg[-n_champs:] = l2_champ
-    for _ in range(30):
-        p = _sigmoid(A @ beta); W = p * (1 - p) + 1e-9
-        step = np.linalg.solve((A * W[:, None]).T @ A + np.diag(reg), A.T @ (p - y) + reg * beta)
-        beta -= step
-        if np.max(np.abs(step)) < 1e-6:
-            break
-    np.savez(path, beta=beta, names=np.array(names), rich_cols=np.array(rich_cols),
-             xcols=np.array(xcols), champ_names=np.array(champ_names), t_cap=t_cap)
-    # sanity: net effect of +1k gold at several game times must stay positive
     gi = rich_cols.index(idx["gold_k"]); gxi = len(rich_cols) + xcols.index(idx["gold_k"])
     for tm in (10, 20, 30, 40):
         tt = tm / 30.0
         net = beta[gi] + beta[gxi] * tt + (beta[rich_cols.index(idx["gold_k_x_t"])] * tt if "gold_k_x_t" in names else 0)
         log.info("wpx: net log-odds per +1k gold at %d min = %+.3f", tm, net)
-    log.info("wpx: live model saved (%d states, %d features)", len(y), A.shape[1])
+    if not model["converged"]:
+        raise RuntimeError("legacy live-contract fit did not converge")
+    log.info("wpx: legacy live-contract model saved (%d states, %d features)",
+             len(d["y"]), len(beta))
     return path
 
 
 def fit_full(*_args, **_kwargs):
-    """Fit the production causal constrained model.
-
-    The old exploration fit remains available as :func:`fit_full_legacy`.
-    Positional tuning arguments from that model are intentionally ignored so
-    scheduled refresh scripts can migrate without changing their call site.
-    """
-    from . import wpgam
+    """Stage, chronologically gate, and promote the production live stack."""
+    from . import wpdeploy
+    if _args:
+        raise TypeError("production refresh accepts keyword options only")
     dataset_path = _kwargs.pop("dataset_path", None)
-    _kwargs.pop("model_path", None)
+    bootstrap = _kwargs.pop("bootstrap", 5000)
+    min_improvement = _kwargs.pop("min_improvement", 0.0)
     if _kwargs:
-        raise TypeError("unknown constrained-model options: %s" % sorted(_kwargs))
-    fit_full_legacy(*_args)
-    return wpgam.fit_full(dataset_path=dataset_path,
-                          model_path=GAM_LIVE_MODEL_PATH)
+        raise TypeError("unknown production-refresh options: %s" % sorted(_kwargs))
+    wpdeploy.refresh(dataset_path=dataset_path, bootstrap=bootstrap,
+                     min_improvement=min_improvement)
+    return GAM_LIVE_MODEL_PATH
 
 
 def live_vector(state, names):
@@ -934,6 +1089,8 @@ PRIOR_CLIP = {"elo_oe": 0.9, "pelo_oe": 0.9, "form_diff": 0.6, "elo_gg": 0.9}
 def _predict_live_legacy(state, blue_champs=(), red_champs=(), path=LEGACY_LIVE_MODEL_PATH):
     """Win probability for BLUE from an observable live state (see live_vector)."""
     m = np.load(path, allow_pickle=True)
+    if "contract" in m.files and str(m["contract"].item()) != LEGACY_LIVE_CONTRACT:
+        raise ValueError("unsupported legacy live contract %s" % m["contract"].item())
     names = list(m["names"]); beta = m["beta"]; rich_cols = list(m["rich_cols"])
     xcols = list(m["xcols"]) if "xcols" in m.files else [c for c in rich_cols if names[c] not in ALREADY_INTERACTED and names[c] != "bias"]
     champ_names = list(m["champ_names"]); t_cap = float(m["t_cap"])
@@ -977,22 +1134,20 @@ def _predict_live_legacy(state, blue_champs=(), red_champs=(), path=LEGACY_LIVE_
             "lo_prior": round(lo_prior, 3), "lo_state": round(lo_state, 3), "lo_champ": round(lo_champ, 3), "lo_time": round(lo_time, 3)}
 
 
-# Deployed forecast = logit blend of the constrained GAM (v7 champion-state
-# contract) and the legacy champscale model.  The weight was selected on the
-# chronological validation block (nested, test untouched) on 2026-08-29:
-# untouched-test game Brier 0.14179 vs 0.14247 for the GAM alone, paired
-# 95% interval -0.00125..-0.00011.  The selection curve is flat for
-# w_gam in 0.25..0.5, so a fixed weight is robust to redeployment drift.
+# Compatibility constant for callers and old reports.  Production now reads a
+# content-addressed, holdout-gated weight from LIVE_STACK_PATH.  Without that
+# manifest (or when either component hash differs), inference is GAM-only.
 LIVE_BLEND_W_GAM = 0.45
 
 
 def predict_live(state, blue_champs=(), red_champs=(), path=LIVE_MODEL_PATH,
                  blend=True):
-    """Deployed live score: GAM + legacy champscale logit blend.
+    """Deployed live score from the gated GAM/legacy stack.
 
-    Falls back to the GAM alone when the legacy artifact is missing, and to
-    the legacy model alone when the GAM artifact is missing.  The log-odds
-    breakdown fields always describe the GAM component.
+    A production call requires the constrained GAM.  The legacy comparator is
+    consulted only when a content-addressed manifest promotes the exact pair;
+    it is never used as an implicit fallback.  The log-odds breakdown fields
+    always describe the GAM component.
     """
     gam_out = None
     if os.path.exists(path):
@@ -1006,20 +1161,26 @@ def predict_live(state, blue_champs=(), red_champs=(), path=LIVE_MODEL_PATH,
             if path != LEGACY_LIVE_MODEL_PATH:
                 raise
     if gam_out is None:
-        legacy = path if path != LIVE_MODEL_PATH else LEGACY_LIVE_MODEL_PATH
-        return _predict_live_legacy(state, blue_champs, red_champs, legacy)
-    if not blend or path != LIVE_MODEL_PATH or not os.path.exists(LEGACY_LIVE_MODEL_PATH):
+        if path == LIVE_MODEL_PATH:
+            raise FileNotFoundError("production constrained GAM is unavailable")
+        return _predict_live_legacy(state, blue_champs, red_champs, path)
+    stack = (load_live_stack() if blend and path == LIVE_MODEL_PATH
+             else {"deployed": False, "w_gam": 1.0,
+                   "reason": "blend disabled or non-production model path"})
+    if not stack.get("deployed") or float(stack.get("w_gam", 1.0)) >= 1.0:
+        gam_out["stack_reason"] = stack.get("reason")
         return gam_out
     legacy_out = _predict_live_legacy(state, blue_champs, red_champs)
     clip = lambda p: min(1.0 - 1e-6, max(1e-6, float(p)))
     logit = lambda p: math.log(clip(p) / (1.0 - clip(p)))
-    w = LIVE_BLEND_W_GAM
+    w = float(stack["w_gam"])
     p = _sigmoid(w * logit(gam_out["p_blue"]) + (1.0 - w) * logit(legacy_out["p_blue"]))
     out = dict(gam_out)
     out.update({
         "p_blue": round(float(p), 4),
         "p_gam": gam_out["p_blue"], "p_legacy": legacy_out["p_blue"],
         "blend_w_gam": w,
+        "stack_sha256": stack.get("stack_sha256"),
         "unknown_champions": sorted(set(gam_out.get("unknown_champions") or [])
                                     | set(legacy_out.get("unknown_champions") or [])),
         "model_kind": "%s+champscale_w%.2f" % (gam_out.get("model_kind", ""), w),

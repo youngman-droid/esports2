@@ -711,6 +711,8 @@ def save_model(model, path=MODEL_PATH, meta=None):
         "state_l2": np.asarray(state.get("l2", STATE_L2)),
         "state_smooth": np.asarray(state.get("smooth", STATE_SMOOTH)),
         "calibration_method": np.asarray(state.get("calibration_method", "unknown")),
+        "optimizer_success": np.asarray(bool(state.get("optimizer_success", False))),
+        "optimizer_message": np.asarray(str(state.get("optimizer_message", "unknown"))),
         "champ_state_beta": np.asarray(model["champ_state"]["beta"], dtype=np.float64),
         "champ_state_cap_min": np.asarray(float(model["champ_state"]["cap_min"])),
         "champ_state_l2": np.asarray(float(model["champ_state"]["l2"])),
@@ -740,6 +742,10 @@ def load_model(path=MODEL_PATH):
             "smooth": float(d["state_smooth"]) if "state_smooth" in d.files else STATE_SMOOTH,
             "calibration_method": (str(d["calibration_method"].item())
                                    if "calibration_method" in d.files else "unknown"),
+            "optimizer_success": (bool(d["optimizer_success"].item())
+                                  if "optimizer_success" in d.files else None),
+            "optimizer_message": (str(d["optimizer_message"].item())
+                                  if "optimizer_message" in d.files else "not recorded"),
         },
         "champ_state": {
             "beta": d["champ_state_beta"],
@@ -817,6 +823,22 @@ def predict_live(state, blue_champs=(), red_champs=(), path=MODEL_PATH):
     dead_blue = float(state.get("dead_blue", 0) or 0)
     dead_red = float(state.get("dead_red", 0) or 0)
     dead_adv = dead_red - dead_blue
+    pre_clipped = [name for name, value, lo, hi in zip(
+        PREGAME_FEATURES, pre_raw, pre["lo"], pre["hi"])
+                   if value < lo or value > hi]
+    state_clipped = [name for name, value, lo, hi in zip(
+        PRIOR_INPUTS + STATE_FEATURES, state_raw[0],
+        model["state"]["lo"], model["state"]["hi"])
+                     if value < lo or value > hi]
+    input_warnings = []
+    if unknown:
+        input_warnings.append("unknown_champions")
+    if float(state.get("has_hp", 0.0) or 0.0) <= 0.0 and t_min >= 5.0:
+        input_warnings.append("hp_unavailable")
+    if not any(state.get(name) is not None for name in PREGAME_FEATURES):
+        input_warnings.append("pregame_priors_unavailable")
+    if pre_clipped or state_clipped:
+        input_warnings.append("inputs_clipped_to_training_range")
     return {"p_blue": round(float(p[0]), 4), "unknown_champions": unknown,
             "lo_prior": round(lo_prior, 3), "lo_state": round(lo_state, 3),
             "lo_champ": round(lo_champ, 3), "lo_time": round(lo_time, 3),
@@ -826,6 +848,9 @@ def predict_live(state, blue_champs=(), red_champs=(), path=MODEL_PATH):
             "lo_elder_active": round(lo_elder_active, 3),
             "terminal_state": bool(t_min >= 35.0 and max(dead_blue, dead_red) >= 4.0
                                    and min(dead_blue, dead_red) <= 1.0),
+            "input_warnings": input_warnings,
+            "clipped_inputs": sorted(set(pre_clipped + state_clipped)),
+            "reliability": ("reduced" if input_warnings else "normal"),
             "model_kind": MODEL_KIND}
 
 
@@ -865,6 +890,43 @@ def _metric_summary(p, y, gids, bootstrap=1000, seed=23):
             "brier_game": float(per_game.mean()),
             "brier_game_ci95": [float(np.quantile(draws, 0.025)), float(np.quantile(draws, 0.975))],
             "logloss_state": float(ll)}
+
+
+def _rolling_date_masks(game_dates, windows=3, min_train_fraction=0.5):
+    """Strict expanding-window splits that keep complete dates together."""
+    dates = np.asarray(game_dates).astype(str)
+    unique = np.unique(dates)
+    if len(unique) < windows + 2:
+        raise ValueError("not enough distinct dates for rolling evaluation")
+    first = max(1, int(round(len(unique) * float(min_train_fraction))))
+    remaining = unique[first:]
+    blocks = [b for b in np.array_split(remaining, int(windows)) if len(b)]
+    out = []
+    for block in blocks:
+        train = dates < block[0]
+        test = (dates >= block[0]) & (dates <= block[-1])
+        if train.any() and test.any():
+            out.append((train, test, str(block[0]), str(block[-1])))
+    return out
+
+
+def _categorical_metrics(values, p, y, gids, min_games=30, max_groups=30,
+                         bootstrap=300):
+    values = np.asarray(values).astype(str)
+    groups = []
+    for value in np.unique(values):
+        if not value:
+            continue
+        mask = values == value
+        n_games = len(np.unique(np.asarray(gids)[mask]))
+        if n_games >= min_games:
+            groups.append((n_games, value, mask))
+    out = {}
+    for _, value, mask in sorted(groups, reverse=True)[:max_groups]:
+        out[value] = _metric_summary(
+            np.asarray(p)[mask], np.asarray(y)[mask], np.asarray(gids)[mask],
+            bootstrap=bootstrap)
+    return out
 
 
 def evaluate_walk_forward(dataset_path=None, holdout=0.2, bootstrap=1000):
@@ -909,6 +971,37 @@ def evaluate_walk_forward(dataset_path=None, holdout=0.2, bootstrap=1000):
     if late_four_vs_one.any():
         out["by_situation"]["late_four_vs_one"] = _metric_summary(
             p[late_four_vs_one], y[late_four_vs_one], gids[late_four_vs_one], bootstrap)
+    # Distribution-shift diagnostics for inputs whose historical availability
+    # differs from live inference.  These are reported, never used for tuning.
+    has_hp = test_X[:, names["has_hp"]] > 0.5
+    oe_available = ((np.abs(test_X[:, names["elo_oe"]]) > 1e-12)
+                    | (np.abs(test_X[:, names["pelo_oe"]]) > 1e-12))
+    out["by_telemetry"] = {}
+    for label, mask in (("hp_available", has_hp), ("hp_missing", ~has_hp),
+                        ("oe_prior_available", oe_available),
+                        ("oe_prior_missing_or_even", ~oe_available)):
+        if mask.any():
+            out["by_telemetry"][label] = _metric_summary(
+                p[mask], y[mask], gids[mask], bootstrap)
+    out["coverage"] = {
+        "hp_state_fraction": float(has_hp.mean()),
+        "hp_games": int(len(np.unique(gids[has_hp]))),
+        "oe_prior_state_fraction": float(oe_available.mean()),
+        "oe_prior_games": int(len(np.unique(gids[oe_available]))),
+    }
+    out["by_era"] = {
+        "month": _categorical_metrics(
+            np.asarray([str(value)[:7] for value in d["date"][test]]),
+            p, y, gids, min_games=30, bootstrap=min(bootstrap, 300)),
+    }
+    if "patch" in d.files:
+        out["by_era"]["patch"] = _categorical_metrics(
+            d["patch"][test], p, y, gids, min_games=30,
+            bootstrap=min(bootstrap, 300))
+    if "league" in d.files:
+        out["by_era"]["league"] = _categorical_metrics(
+            d["league"][test], p, y, gids, min_games=30,
+            bootstrap=min(bootstrap, 300))
     out["event_aligned"] = {}
     test_game = np.asarray([g in test_gids for g in d["gid"]])
     for platform in ("pm", "ks"):
@@ -921,6 +1014,47 @@ def evaluate_walk_forward(dataset_path=None, holdout=0.2, bootstrap=1000):
                 "market": _metric_summary(d[platform][aligned], event_y, event_gid, bootstrap),
             }
     return out
+
+
+def evaluate_rolling(dataset_path=None, windows=3, min_train_fraction=0.5,
+                     bootstrap=500):
+    """Expanding-window stability evaluation over multiple future eras."""
+    dataset_path = dataset_path or os.path.join(OUT_DIR, "states.npz")
+    d = np.load(dataset_path, allow_pickle=True)
+    first = _game_rows(d["gid"])
+    game_gid = np.asarray(d["gid"])[first]
+    game_dates = np.asarray(d["date"])[first].astype(str)
+    folds = _rolling_date_masks(game_dates, windows, min_train_fraction)
+    results = []
+    for fold_no, (train, test_games, start, end) in enumerate(folds, 1):
+        model = fit_arrays(
+            d["X"], d["y"], d["gid"], d["t"], d["seq"], d["C"],
+            list(d["names"]), list(d["champ_names"]), train_games=train,
+            dates=d["date"])
+        wanted = set(game_gid[test_games].tolist())
+        rows = ((np.asarray(d["seq"]) < 0)
+                & np.asarray([g in wanted for g in d["gid"]]))
+        prior = prior_values_from_matrix(
+            model, d["X"][rows], list(d["names"]), d["C"][rows])
+        raw = np.column_stack([
+            prior, state_values_from_matrix(d["X"][rows], list(d["names"]))])
+        pred = predict_state(model["state"], raw, d["t"][rows] / 60.0)
+        results.append({
+            "fold": fold_no, "test_start": start, "test_end": end,
+            "train_games": int(train.sum()), "test_games": int(test_games.sum()),
+            "metrics": _metric_summary(
+                pred, d["y"][rows], d["gid"][rows], bootstrap,
+                seed=100 + fold_no),
+        })
+    d.close()
+    briers = [r["metrics"]["brier_game"] for r in results]
+    return {
+        "kind": "wpgam_rolling_origin_v1", "windows": results,
+        "summary": {"mean_brier_game": float(np.mean(briers)),
+                    "std_brier_game": float(np.std(briers)),
+                    "min_brier_game": float(np.min(briers)),
+                    "max_brier_game": float(np.max(briers))},
+    }
 
 
 def report_walk_forward(result):

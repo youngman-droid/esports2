@@ -1,3 +1,4 @@
+import hashlib
 import unittest
 
 from lol_ticker import shadow
@@ -42,6 +43,9 @@ class ProspectiveScoreTests(unittest.TestCase):
             "kalshi_p": None, "kalshi_blend_p": None,
             "polymarket_lead_s": 45.0, "kalshi_lead_s": None,
             "model_sha256": "a" * 64, "blend_sha256": "b" * 64,
+            "legacy_component_sha256": "c" * 64,
+            "stack_sha256": "d" * 64, "live_blend_w_gam": 0.45,
+            "code_revision": "e" * 40,
         }
 
     def test_score_is_game_balanced_and_paired_on_identical_rows(self):
@@ -71,6 +75,34 @@ class ProspectiveScoreTests(unittest.TestCase):
         self.assertEqual(got["games"], 1)
         self.assertEqual(got["paired"]["forecast"], "model")
         self.assertNotIn("blend", got["scores"])
+
+    def test_scores_are_separated_by_exact_stack_version(self):
+        old = self._row("g1", 1, 1, 0.6, None)
+        new = self._row("g2", 1, 0, 0.4, None)
+        new["stack_sha256"] = "f" * 64
+        new["legacy_component_sha256"] = "9" * 64
+        got = shadow.score_rows([old, new], bootstrap=0)
+        revision_key = hashlib.sha256(("e" * 40).encode()).hexdigest()[:12]
+        old_key = "d" * 12 + "@" + revision_key
+        new_key = "f" * 12 + "@" + revision_key
+        self.assertEqual(got["artifact_versions"], {old_key: 1, new_key: 1})
+        self.assertEqual(set(got["by_artifact_version"]), {old_key, new_key})
+        self.assertEqual(
+            got["by_artifact_version"][new_key]["legacy_component_sha256"],
+            "9" * 64)
+
+    def test_legacy_rows_are_marked_as_partial_versions(self):
+        row = self._row("g1", 1, 1, 0.6, None)
+        row.pop("stack_sha256")
+        self.assertTrue(shadow._version_key(row).startswith("partial-"))
+
+    def test_dirty_revisions_on_same_commit_get_distinct_cohorts(self):
+        first = self._row("g1", 1, 1, 0.6, None)
+        second = dict(first)
+        first["code_revision"] = "a" * 40 + "+worktree.1111111111111111"
+        second["code_revision"] = "a" * 40 + "+worktree.2222222222222222"
+        self.assertNotEqual(shadow._version_key(first),
+                            shadow._version_key(second))
 
 
 if __name__ == "__main__":

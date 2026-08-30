@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 import sys
@@ -82,9 +83,12 @@ def main():
 
     wx = sub.add_parser("wpx", help="odds-free modeling and historical evaluation")
     wx.add_argument("step", choices=["prep", "build", "fit", "gam-eval", "bench",
-                                     "hist-blend", "blend", "blend-live", "eval", "all"])
+                                     "rolling", "stack-eval", "hist-blend", "blend",
+                                     "blend-live", "eval", "all"])
     wx.add_argument("--lead", type=int, default=45,
                     help="market lead in seconds for blend-live (default: 45)")
+    wx.add_argument("--windows", type=int, default=3,
+                    help="expanding chronological windows for rolling evaluation")
 
     al = sub.add_parser("align", help="align gol.gg timelines with odds; build event swings")
     al.add_argument("--rebuild", action="store_true", help="recompute existing alignments too")
@@ -96,7 +100,8 @@ def main():
     # Cached-model operations are deliberately usable without PostgreSQL.
     # ``prep``, ``build`` and ``all`` still need the source database.
     cached_wpx = args.cmd == "wpx" and args.step in (
-        "fit", "gam-eval", "bench", "hist-blend", "blend", "eval")
+        "fit", "gam-eval", "rolling", "stack-eval", "bench",
+        "hist-blend", "blend", "eval")
     conn = None if cached_wpx else db.connect(args.dsn)
 
     if args.cmd == "discover":
@@ -196,6 +201,13 @@ def main():
         if args.step in ("gam-eval", "all"):
             from . import wpgam
             wpgam.report_walk_forward(wpgam.evaluate_walk_forward())
+        if args.step == "rolling":
+            from . import wpgam
+            out = wpgam.evaluate_rolling(windows=max(1, args.windows))
+            print(json.dumps(out, indent=2))
+        if args.step == "stack-eval":
+            from . import wpdeploy
+            wpdeploy.report(wpdeploy.run())
         if args.step in ("bench", "all"):
             from . import wpbench
             wpbench.report(wpbench.run())

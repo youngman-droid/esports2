@@ -97,7 +97,7 @@ def scrape_game(egid, http_pause=0.12):
     except Exception:
         w0 = None
     if not w0 or not w0.get("frames"):
-        return "unavailable"
+        return "unavailable", []
     t0 = _ts(w0["frames"][0]["rfc460Timestamp"])
     rows = []
     empty = 0

@@ -125,6 +125,26 @@ class FrameStateTests(unittest.TestCase):
         self.assertEqual(state["dead_red"], 0)
         self.assertEqual(state["hp_low_b"], 4.0)
 
+    def test_midgame_restart_recovers_recent_kill_clock(self):
+        t0 = live._ts("2026-08-29T00:00:00Z")
+
+        def frame(ts, kills):
+            return {
+                "rfc460Timestamp": live._iso(ts),
+                "blueTeam": {"totalKills": kills, "dragons": [], "barons": 0},
+                "redTeam": {"totalKills": 0, "dragons": [], "barons": 0},
+            }
+
+        current = frame(t0 + 500, 5)
+
+        def probe(_game_id, ts):
+            return frame(ts, 4 if ts < t0 + 400 else 5)
+
+        with mock.patch.object(live, "_baron_probe", side_effect=probe):
+            clock = live._seed_recent_kill_clock("g", current, 500, t0)
+        self.assertIsNotNone(clock)
+        self.assertLessEqual(abs(clock - 400), 10)
+
     def test_baron_timer_starts_at_180_and_active_means_timer_positive(self):
         frame = {
             "blueTeam": self._team("blue", dead=0),

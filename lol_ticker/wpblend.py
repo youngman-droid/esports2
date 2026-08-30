@@ -1,7 +1,8 @@
 """Chronological optimization of market/model probability blends.
 
 Polymarket blend families are tuned inside the middle date block and evaluated
-on the untouched outer test.  Kalshi begins later in the dataset, so its
+on the then-held-out outer diagnostic.  Kalshi begins later in the dataset,
+so its
 covered games receive their own 40/20/40 forward split.  Event rows and games
 are identical for every method within a platform comparison.
 """

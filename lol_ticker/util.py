@@ -1,6 +1,8 @@
 import hashlib
 import json
+import os
 import re
+import subprocess
 from datetime import datetime, timedelta, timezone
 
 _ISO_RE = re.compile(
@@ -45,3 +47,35 @@ def book_hash(bids, asks):
 def trade_hash(*fields):
     payload = "|".join(str(f) for f in fields)
     return hashlib.sha1(payload.encode()).hexdigest()
+
+
+def source_revision(repo_root):
+    """Git revision plus a deterministic fingerprint for dirty source trees."""
+    try:
+        head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo_root, text=True,
+            stderr=subprocess.DEVNULL, timeout=5).strip()
+        dirty = bool(subprocess.check_output(
+            ["git", "status", "--porcelain"], cwd=repo_root, text=True,
+            stderr=subprocess.DEVNULL, timeout=5).strip())
+    except (OSError, subprocess.SubprocessError):
+        head, dirty = "unknown", True
+    if not dirty:
+        return head
+    digest = hashlib.sha256()
+    try:
+        digest.update(subprocess.check_output(
+            ["git", "diff", "--binary", "HEAD", "--"], cwd=repo_root,
+            stderr=subprocess.DEVNULL, timeout=10))
+        untracked = subprocess.check_output(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=repo_root, stderr=subprocess.DEVNULL, timeout=5)
+        for rel_raw in sorted(x for x in untracked.split(b"\0") if x):
+            rel = rel_raw.decode(errors="surrogateescape")
+            digest.update(rel_raw + b"\0")
+            with open(os.path.join(repo_root, rel), "rb") as fh:
+                for block in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(block)
+    except (OSError, subprocess.SubprocessError):
+        digest.update(b"unavailable-dirty-source")
+    return "%s+worktree.%s" % (head, digest.hexdigest()[:16])

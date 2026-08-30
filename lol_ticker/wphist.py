@@ -2,9 +2,10 @@
 
 Past Polymarket/Kalshi probabilities supervise a second constrained state
 surface.  A validation block chooses how much of that historical-market
-teacher to mix with the outcome GAM.  The untouched newest-date block is the
-deployment gate.  At live inference both probabilities are functions only of
-team/draft/game-state inputs; no quote from the current match is accepted.
+teacher to mix with the outcome GAM.  A persistent experiment-specific ledger
+reserves later outcomes for a one-time deployment gate.  At live inference
+both probabilities are functions only of team/draft/game-state inputs; no
+quote from the current match is accepted.
 """
 import hashlib
 import json
@@ -21,6 +22,8 @@ log = logging.getLogger("wphist")
 KIND = "historical_odds_distill_v1"
 ARTIFACT_PATH = os.path.join(wpgam.OUT_DIR, "historical_blend.npz")
 RESULT_PATH = os.path.join(wpgam.OUT_DIR, "historical_blend.json")
+REGISTRY_PATH = os.path.join(wpgam.OUT_DIR,
+                             "historical_evaluation_registry.json")
 SPECS = (
     {"l2": 12.0, "smooth": 35.0},
     {"l2": 24.0, "smooth": 70.0},
@@ -209,13 +212,21 @@ def predict_live(model_p, state, blue_champs=(), red_champs=(),
 
 
 def run(dataset_path=None, output_path=RESULT_PATH, artifact_path=ARTIFACT_PATH,
-        base_path=wpgam.MODEL_PATH, bootstrap=2000):
+        base_path=wpgam.MODEL_PATH, bootstrap=2000,
+        registry_path=REGISTRY_PATH):
     dataset_path = dataset_path or os.path.join(wpgam.OUT_DIR, "states.npz")
     started = time.time()
     d = np.load(dataset_path, allow_pickle=True)
-    first, outer_train, split_method = wpgam._date_split(d)
+    first, diagnostic_train, split_method = wpgam._date_split(d)
     game_gid = np.asarray(d["gid"])[first]
     game_dates = np.asarray(d["date"])[first].astype(str)
+    from . import wpdeploy
+    registry, initialized = wpdeploy._load_registry(
+        registry_path, game_dates, experiment="historical_odds")
+    fresh_test = game_dates > str(registry["consumed_through"])
+    fresh_eligible = int(fresh_test.sum()) >= wpdeploy.MIN_FRESH_GAMES
+    outer_train = ~fresh_test if fresh_eligible else diagnostic_train
+    outer_test = fresh_test if fresh_eligible else ~diagnostic_train
     inner_train, validation, validation_cutoff = wpbench._date_blocks(
         game_dates, outer_train)
     gid_index = {int(g): i for i, g in enumerate(game_gid)}
@@ -265,7 +276,7 @@ def run(dataset_path=None, output_path=RESULT_PATH, artifact_path=ARTIFACT_PATH,
     outer_quotes = event & quoted & outer_train[row_game]
     outer_teacher = _fit_teacher(
         d, outer_model, outer_quotes, target, best_spec)
-    test_fixed = fixed & (~outer_train)[row_game]
+    test_fixed = fixed & outer_test[row_game]
     test_raw, test_t, test_model = _raw_rows(d, outer_model, test_fixed)
     test_teacher = wpgam.predict_state(outer_teacher, test_raw, test_t)
     test_blend = _mix(test_model, test_teacher, alpha)
@@ -279,8 +290,10 @@ def run(dataset_path=None, output_path=RESULT_PATH, artifact_path=ARTIFACT_PATH,
     paired = _paired_gate(
         test_model, test_blend, y_test, gid_test,
         bootstrap=max(bootstrap, 2000))
-    deployed = bool(blend_summary["brier_game"] < model_summary["brier_game"]
-                    and alpha > 1e-6)
+    statistical_passed = bool(
+        blend_summary["brier_game"] < model_summary["brier_game"]
+        and alpha > 1e-6 and paired["ci95"][1] < 0.0)
+    deployed = bool(statistical_passed and fresh_eligible)
 
     # Refit only on information available for actual deployment.  The teacher
     # sees all stored historical quotes; live inference still sees none.
@@ -295,9 +308,11 @@ def run(dataset_path=None, output_path=RESULT_PATH, artifact_path=ARTIFACT_PATH,
             "inner_train_games": int(inner_train.sum()),
             "validation_games": int(validation.sum()),
             "outer_train_games": int(outer_train.sum()),
-            "test_games": int((~outer_train).sum()),
+            "test_games": int(outer_test.sum()),
             "validation_start": str(validation_cutoff),
-            "test_start": str(np.sort(game_dates[~outer_train])[0]),
+            "test_start": str(np.sort(game_dates[outer_test])[0]),
+            "holdout_status": ("fresh_forward_block" if fresh_eligible
+                               else "diagnostic_reused_block"),
         },
         "historical_quotes": {
             "rows": int(all_quotes.sum()),
@@ -310,13 +325,14 @@ def run(dataset_path=None, output_path=RESULT_PATH, artifact_path=ARTIFACT_PATH,
         "test": {"model": model_summary, "historical_teacher": teacher_summary,
                  "historical_blend": blend_summary, "paired": paired},
         "deployed": deployed,
-        "deployment_rule": "historical blend game-balanced Brier < standalone model on untouched newest-date holdout",
+        "deployment_rule": "paired improvement CI below zero on >=100 registry-fresh games",
+        "gate": {"statistical_passed": statistical_passed,
+                 "fresh_holdout_eligible": fresh_eligible,
+                 "fresh_games_available": int(fresh_test.sum()),
+                 "consumed_through_before_run": registry["consumed_through"]},
         "uses_live_odds": False,
         "seconds": round(time.time() - started, 2),
     }
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "w") as fh:
-        json.dump(report, fh, indent=2, sort_keys=True)
     meta = {
         "dataset": report["dataset"], "fitted_at": int(time.time()),
         "historical_quotes": report["historical_quotes"],
@@ -324,7 +340,23 @@ def run(dataset_path=None, output_path=RESULT_PATH, artifact_path=ARTIFACT_PATH,
         "deployment_rule": report["deployment_rule"],
         "uses_live_odds": False,
     }
+    if fresh_eligible:
+        registry["history"].append({
+            "action": "historical_blend_forward_gate",
+            "test_start": str(min(game_dates[fresh_test].tolist())),
+            "test_end": str(max(game_dates[fresh_test].tolist())),
+            "games": int(fresh_test.sum()), "deployed": deployed,
+            "statistical_passed": statistical_passed})
+        registry["consumed_through"] = str(max(game_dates[fresh_test].tolist()))
+        wpdeploy._write_registry(registry_path, registry)
+    elif initialized:
+        wpdeploy._write_registry(registry_path, registry)
+    # The append-only ledger advances before the human-readable result is
+    # published so a crash cannot make inspected outcomes appear fresh.
     _save_artifact(full_teacher, alpha, deployed, meta, artifact_path, base_path)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w") as fh:
+        json.dump(report, fh, indent=2, sort_keys=True)
     d.close()
     return report
 

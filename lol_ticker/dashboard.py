@@ -684,7 +684,11 @@ def api_wpx_results(params):
             out["method_benchmark"] = json.load(f)
     for key, filename in (("blend_benchmark", "blend_benchmark.json"),
                           ("blend_latency45", "blend_latency45.json"),
-                          ("historical_blend", "historical_blend.json")):
+                          ("historical_blend", "historical_blend.json"),
+                          ("live_stack_benchmark", "live_stack_benchmark.json"),
+                          ("rolling_origin", "rolling_origin.json"),
+                          ("walk_forward_diagnostics", "walk_forward_diagnostics.json"),
+                          ("live_stack", "live_stack.json")):
         blend_path = os.path.join(config.REPO_ROOT, "data", "wpx", filename)
         if key not in out and os.path.exists(blend_path):
             with open(blend_path) as f:

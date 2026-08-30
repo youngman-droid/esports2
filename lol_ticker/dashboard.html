@@ -958,6 +958,14 @@ async function wpxResults(){
   if (d.error){ document.getElementById('wpx-table').textContent = d.error; return; }
   const f4 = v => v == null ? '—' : v.toFixed(4);
   const blendRows = [];
+  if (d.live_stack_benchmark){
+    const s = d.live_stack_benchmark, t = s.test;
+    const production = s.deployed ? t.candidate : t.gam;
+    blendRows.push({timing:`production odds-free stack · ${s.split.holdout_status}`,
+      platform:'none', method:s.deployed ? `blend wGAM=${s.deployed_w_gam}` : 'GAM only · comparator rejected',
+      games:s.split.test_games, blend_g:production.brier_game,
+      blend_s:production.brier_state, market_g:null, model_g:t.gam.brier_game});
+  }
   if (d.historical_blend){
     const h = d.historical_blend, t = h.test;
     blendRows.push({timing:'historical odds only · no live quote', platform:'pooled history',
@@ -1005,21 +1013,24 @@ async function wpxResults(){
       {h: 'calibration slope', key: 'calibration', num: true, f: r => f4(r.calibration.slope)},
       {h: 'delta vs best', key: 'delta_brier_game_vs_best', num: true, f: r => f4(r.delta_brier_game_vs_best)}]);
   } else document.getElementById('wpx-methods').textContent = '';
-  const gam = d.constrained_walk_forward;
+  const gam = d.walk_forward_diagnostics || d.constrained_walk_forward;
   if (gam){
     const grows = [{phase: 'overall', ...gam.overall},
       ...(gam.pregame_baseline ? [{phase: 'pregame baseline', ...gam.pregame_baseline}] : []),
       ...Object.entries(gam.by_phase || {}).map(([phase, v]) => ({phase, ...v})),
+      ...Object.entries(gam.by_telemetry || {}).map(([phase, v]) => ({phase: `telemetry · ${phase}`, ...v})),
       ...Object.entries(gam.event_aligned || {}).flatMap(([platform, v]) => [
         {phase: `event ${platform.toUpperCase()} · model`, ...v.model},
         {phase: `event ${platform.toUpperCase()} · market`, ...v.market}])];
+    for (const fold of d.rolling_origin?.windows || []) grows.push({
+      phase:`rolling ${fold.test_start}…${fold.test_end}`, ...fold.metrics});
     draftTable('wpx-gam', grows, [
       {h: `constrained GAM · ${gam.split} split`, key: 'phase', f: r => r.phase},
       {h: 'states', key: 'states', num: true, f: r => r.states},
       {h: 'games', key: 'games', num: true, f: r => r.games},
       {h: 'Brier · state weighted', key: 'brier_state', num: true, f: r => f4(r.brier_state)},
       {h: 'Brier · game weighted', key: 'brier_game', num: true, f: r => f4(r.brier_game)},
-      {h: 'game-block 95% CI', key: 'brier_game_ci95', f: r => `${f4(r.brier_game_ci95[0])}–${f4(r.brier_game_ci95[1])}`},
+      {h: 'game-block 95% CI', key: 'brier_game_ci95', f: r => r.brier_game_ci95 ? `${f4(r.brier_game_ci95[0])}–${f4(r.brier_game_ci95[1])}` : '—'},
       {h: 'log-loss', key: 'logloss_state', num: true, f: r => f4(r.logloss_state)}]);
   } else document.getElementById('wpx-gam').textContent = '';
   draftTable('wpx-table', d.scoreboard, [

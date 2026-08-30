@@ -251,19 +251,29 @@ Two outcome-based models evaluate drafts and events without any market data
   two-stage, shape-constrained, time-varying logistic GAM: a one-row-per-game
   pregame prior (live-available team/player ratings plus strongly shrunk
   champion effects) and a per-game champion-state score (see the v7 notes
-  below), followed by five smooth game-time knots over a small
+  below), followed by six smooth game-time knots over a small
   historical/live feature contract. Gold, momentum, CS, objectives, living
   players, HP and level advantages are constrained to have
   non-negative partial effects at every knot. Inputs are standardized, games
   are balanced in the loss, only causal fixed-minute states are fitted, and an
   earlier-date holdout calibrates the final logits. `wpx gam-eval` evaluates
   the newest 20% of games and reports state- and game-weighted scores with
-  game-block bootstrap intervals; `wpx fit` writes the versioned live artifact.
+  game-block bootstrap intervals. `wpx rolling --windows 3` runs strict
+  expanding-window stability checks. `wpx fit` now stages both candidate
+  components, verifies convergence and finite inference, runs the exact
+  live-contract stack gate, audits ordered live-input sweeps for monotone
+  behavior, and atomically promotes the manifest last; a crash or hash mismatch
+  therefore falls back to the constrained GAM. Previous artifacts remain as
+  `.previous`.
   `wpx bench` performs a nested chronological comparison of additive ridge
   logistic regression, unconstrained and constrained time-varying GAMs,
   histogram gradient boosting, monotone histogram boosting, and validation-fit
   convex ensembles. Hyperparameters and blend weights use a middle date block;
-  the newest test block is untouched until final scoring.
+  its newest block is a chronological diagnostic. For actual promotion, a
+  persistent `evaluation_registry.json` prevents an inspected outcome block
+  from being relabeled as fresh: all games present when the registry was
+  introduced are quarantined, and a stack change needs at least 100 later
+  games.
 
   The v5 live contract models teamfights with the linear death advantage,
   signed squared death advantage, individual side death-count curvature, and
@@ -283,13 +293,9 @@ Two outcome-based models evaluate drafts and events without any market data
   clamped at 45 the model was overconfident in marathon games (calibration
   slope 0.66 on the >45-minute slice, 177 of 98k test states); the extra
   knot improves that slice (slope 0.70, Brier 0.229 → 0.221) at exactly
-  zero overall cost (paired delta −0.00001). The residual tail
-  overconfidence comes from the champscale blend component's linear time
-  features and is accepted. A related audit check — slight blend
-  overconfidence on the top-20% champion-effect games (slope 0.938) — has a
-  game-block 95% interval of 0.84–1.05 and is therefore unconfirmed; live
-  frames now record `lo_champ_state` so the shadow ledger can answer it
-  prospectively instead.
+  zero overall cost (paired delta −0.00001). Live frames record
+  `lo_champ_state` so champion-heavy calibration can also be checked
+  prospectively.
 
   The v7 contract adds the **champion-state channel**: per-champion
   coefficients estimated champscale-style on in-game states — jointly with
@@ -305,18 +311,24 @@ Two outcome-based models evaluate drafts and events without any market data
   event-aligned slices, and closing the legacy champscale gap to a
   statistically indistinguishable +0.00028.
 
-  The **deployed live forecast is a fixed-weight logit blend** of this GAM
-  and the legacy champscale model (`wpx.predict_live`, w_gam=0.45): the
-  weight was selected on the chronological validation block with the test
-  block untouched, and the blend scores 0.14179 versus 0.14247 for the GAM
-  alone (paired 95% interval −0.00125..−0.00011 — the only candidate to
-  clear the deployment bar) and 0.14219 for champscale alone. The selection
-  curve is flat for w_gam 0.25–0.5, so the fixed weight is robust. The cost
-  is that the blend inherits only 45% of the GAM's shape guarantees; the
-  champscale component is probed clean (monotone coherent gold sweeps,
-  honest tails, sane decided states), both component hashes are frozen on
-  every shadow forecast, and `predict_live(..., blend=False)` (or a missing
-  legacy artifact) falls back to the constrained GAM alone.
+  The **deployed live forecast is currently the constrained GAM alone**.
+  The former hard-coded GAM/champscale blend was retired because its legacy
+  component had been backtested with historical-only fields that became zero
+  live and with event/state-weighted rather than game-balanced loss. Its
+  replacement (`champscale_live_v2`) uses only feed-available columns, causal
+  fixed-minute rows and equal total weight per game. Nested chronological
+  selection now chooses `w_gam=0.75`, but on the 3,102-game diagnostic block
+  the GAM scores 0.143094, the comparator 0.144222, and their candidate blend
+  0.143143 (candidate-minus-GAM +0.000050, paired interval
+  −0.000166..+0.000269), so the manifest rejects it. Even a statistically
+  successful candidate cannot deploy from this already-inspected block; the
+  forward registry has 72 fresh games and requires 100. The candidate also
+  fails the live
+  monotonicity sweep (including early towers/teamfight states and late CS,
+  Baron and level advantages), independently confirming that it should remain
+  a comparator. `predict_live` verifies component and manifest hashes and
+  otherwise fails closed to the GAM; it never silently substitutes the legacy
+  component when the GAM is unavailable.
 
   The v6 contract adds three live-derivable inputs. A gol.gg-based team Elo
   joins the pregame stage: the Oracle's Elixir CSV goes stale for weeks at a
@@ -334,11 +346,12 @@ Two outcome-based models evaluate drafts and events without any market data
   respawn-timer features (`baron_up`, `dragon_up`) would need dragon-kill
   clock tracking in the live path before they can enter the contract.
 
-  On the current causal rebuild (15,263 games), the strict newest-date holdout
-  is 3,064 games. The v7 constrained GAM scores game-weighted Brier 0.14247,
-  state-weighted Brier 0.15334, versus 0.21301 for its pregame-only prior
-  (v6: 0.14341 / 0.15448; v5: 0.14386 / 0.15483), and the deployed
-  GAM+champscale blend scores 0.14179. Removing the shape constraints or
+  On the current causal rebuild (15,349 games through 2026-08-29), the
+  newest-date diagnostic block is 3,102 games. Historical states use
+  official-feed health for exact
+  death counts when available instead of the approximate respawn window used
+  for the remaining games. The v7 constrained GAM scores game-weighted Brier
+  0.143094 and state-weighted Brier 0.153912. Removing the shape constraints or
   swapping model families was tested on the v6 contract: unconstrained GAM
   ±0.00001, monotone boosting +0.00200, ridge +0.00283 — but those bench
   competitors share the GAM's slim feature contract, so they compare model
@@ -356,18 +369,29 @@ Two outcome-based models evaluate drafts and events without any market data
   "Baron + ≥3 more enemies dead while 3–7k behind" states (22–35 min) the
   advantaged side historically wins 71% (n=245 states / 86 games), champscale
   says ~79%, the GAM ~49% — too rare (245 of 1.76M states) to affect
-  aggregate scores, and the deployed blend sits in between. On event-aligned
-  points inside the same newest-date test block, the v7 GAM scores state
-  Brier 0.11702 versus Polymarket's 0.11220, and 0.12061 versus Kalshi's
-  0.11416; these event-triggered samples favour the markets and are reported
+  aggregate scores. On event-aligned
+  points inside the same newest-date diagnostic block, the v7 GAM scores state
+  Brier 0.11915 versus Polymarket's 0.11263, and 0.11929 versus Kalshi's
+  0.11196; these event-triggered samples favour the markets and are reported
   separately from fixed-minute accuracy.
+
+  Diagnostics report telemetry coverage and performance by month, patch and
+  tournament. On the current diagnostic block, HP is available for 31.0% of
+  states / 973 games; 303 games have a missing-or-even OE prior and score
+  0.15349 game Brier versus 0.14197 when an OE prior is available. Two strict
+  expanding windows score 0.15154 (test 2025-06-02..2026-02-20) and 0.14491
+  (2026-02-21..2026-08-29), making regime drift visible instead of hiding it
+  in one aggregate. Predictions expose `input_warnings`, clipped feature names
+  and a `normal`/`reduced` reliability flag for missing HP/priors, unknown
+  champions and out-of-training-range states.
 
   `python3 -m lol_ticker wpx blend` tests probability-space and log-odds
   averages, market recalibration, positive logistic stacking and time-varying
   blends with nested chronological selection (`lol_ticker/wpblend.py`). At
   event instants (v6 rerun), the selected positive logit stack lowers
   game-weighted Brier from 0.10572 (Polymarket) and 0.10898 (model) to 0.09359
-  over 1,866 untouched games; against Kalshi it lowers 0.10974 / 0.11428 to
+  over 1,866 then-held-out diagnostic games; against Kalshi it lowers
+  0.10974 / 0.11428 to
   0.09791 over 420 games. The paired improvements over the markets are 0.01213
   (95% game-block interval 0.00985–0.01442) and 0.01183 (0.00646–0.01727),
   respectively.
@@ -404,12 +428,14 @@ Two outcome-based models evaluate drafts and events without any market data
   teacher learns from historical Polymarket/Kalshi probabilities, while live
   inference accepts only the outcome GAM probability and its underlying
   team/draft/game-state features. A middle date block selects the historical
-  teacher's log-odds weight and the newest 20% of games is an untouched
-  deployment gate. On the current v7 rebuild, the standalone GAM scores
+  teacher's log-odds weight; deployment uses its own append-only registry and
+  the same fresh ≥100-game paired rule as the live stack, so experiment order
+  cannot consume another candidate's ledger. On the earlier v7 diagnostic
+  rebuild, the standalone GAM scores
   game-balanced Brier 0.142468 versus 0.142606 for the historical blend
   (blend-minus-model +0.000138, 95% paired interval -0.000125..+0.000406), so
   the historical-odds blend is rejected; the deployed forecast remains the
-  GAM+champscale blend described above.
+  standalone constrained GAM described above.
 
 ### Prospective shadow scoring
 
@@ -418,17 +444,19 @@ Two outcome-based models evaluate drafts and events without any market data
 game minute is written together with contemporaneous blue-oriented market
 midpoints used strictly as comparison benchmarks, the independently generated
 historical blend when its holdout gate passes, exact feed-to-quote lag, side
-assignment, and SHA-256 hashes of deployed artifacts. A database trigger rejects
-updates or deletes, while the primary key admits only one row for that game
+assignment, component/stack SHA-256 hashes, blend weight and exact source
+revision. A database trigger rejects updates or deletes, while the primary key admits only one row for that game
 minute: missing or stale quotes remain missing and historical games are never
 backfilled. Outcomes are written later to a separate table; remade attempts
 are voided.
 
 The protocol is content-addressed and registered before the first prediction.
-The v7 forecast change (champion-state channel plus the deployed
-GAM+champscale blend) starts a fresh `shadow_v7_champ_state` ledger; all
-earlier forecasts remain immutable and queryable, and every forecast row
-freezes the SHA-256 of both blend components.
+Full stack provenance and the GAM-only gate decision start the
+`shadow_v8_full_provenance` ledger; all earlier forecasts remain immutable and
+queryable. Scores are reported both for the deployment workflow and separately
+for each exact `(stack hash, source revision)` cohort, so refreshes cannot mix
+model versions silently. Pre-v8 rows are explicitly labeled partial because
+their legacy component cannot be reconstructed.
 Its primary metric is game-balanced Brier for the deployed independent
 forecast versus the raw market on the same `(game, minute)` rows, with a paired
 game-block bootstrap interval. Runs

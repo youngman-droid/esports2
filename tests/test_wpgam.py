@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -21,6 +22,32 @@ class TimeBasisTests(unittest.TestCase):
         series = {0: 10.0, 1: 20.0, 2: 1000.0}
         self.assertEqual(wpx._interp(series, 119, float), 20.0)
         self.assertEqual(wpx._interp(series, 120, float), 1000.0)
+
+    def test_historical_hp_observation_carries_exact_deaths(self):
+        hpmap = {10: {"_clock_s": 600, "data": {
+            "hpb": [0.0, 0.0, 0.5, 1.0, 1.0],
+            "hpr": [0.0, 0.4, 0.8, 1.0, 1.0],
+            "lvb": [10] * 5, "lvr": [9] * 5,
+        }}}
+        got = wpx._hp_observation(hpmap, 620)
+        self.assertEqual(got["dead_blue"], 2)
+        self.assertEqual(got["dead_red"], 1)
+        self.assertEqual(got["features"][-1], 1.0)
+
+    def test_rolling_date_masks_are_strict_and_keep_dates_whole(self):
+        dates = np.array(["2026-01-%02d" % day for day in range(1, 11)
+                          for _ in range(2)])
+        folds = wpgam._rolling_date_masks(
+            dates, windows=2, min_train_fraction=0.5)
+        self.assertEqual(len(folds), 2)
+        for train, test, start, end in folds:
+            self.assertFalse(np.any(train & test))
+            self.assertTrue(np.all(dates[train] < start))
+            self.assertTrue(np.all((dates[test] >= start) & (dates[test] <= end)))
+            for date in np.unique(dates):
+                idx = dates == date
+                self.assertTrue(train[idx].all() or test[idx].all()
+                                or (~train[idx] & ~test[idx]).all())
 
 
 class FeatureContractTests(unittest.TestCase):
@@ -110,6 +137,8 @@ class ArtifactTests(unittest.TestCase):
             self.assertGreater(out["lo_champ_state"], 0.0)
             enemy = wpgam.predict_live(base, red_champs=["Ahri"], path=path)
             self.assertLess(enemy["lo_champ_state"], 0.0)
+            self.assertEqual(out["reliability"], "reduced")
+            self.assertIn("hp_unavailable", out["input_warnings"])
 
     def test_production_live_default_uses_blend_base_model(self):
         self.assertEqual(wpx.LIVE_MODEL_PATH, wpgam.MODEL_PATH)
@@ -121,15 +150,38 @@ class ArtifactTests(unittest.TestCase):
         state = {"t_min": 22.0, "gold_diff_k": 2.5, "gold_diff_prev_k": 2.0,
                  "gold_blue": 42000, "gold_red": 39500, "kills": 4, "towers": 2,
                  "towers_blue": 5, "towers_red": 3, "elo_oe": 0.2}
-        out = wpx.predict_live(state)
+        with mock.patch.object(
+                wpx, "load_live_stack",
+                return_value={"deployed": True, "w_gam": 0.45,
+                              "stack_sha256": "a" * 64}), \
+                mock.patch.object(
+                    wpx, "_predict_live_legacy",
+                    return_value={"p_blue": 0.65, "unknown_champions": []}):
+            out = wpx.predict_live(state)
         self.assertIn("p_gam", out)
         self.assertIn("p_legacy", out)
         lo = min(out["p_gam"], out["p_legacy"]) - 1e-9
         hi = max(out["p_gam"], out["p_legacy"]) + 1e-9
         self.assertTrue(lo <= out["p_blue"] <= hi)
-        self.assertEqual(out["blend_w_gam"], wpx.LIVE_BLEND_W_GAM)
+        self.assertEqual(out["blend_w_gam"], 0.45)
         gam_only = wpx.predict_live(state, blend=False)
         self.assertEqual(gam_only["p_blue"], out["p_gam"])
+
+    def test_production_falls_back_to_gam_without_promoted_stack(self):
+        with mock.patch.object(
+                wpx, "load_live_stack",
+                return_value={"deployed": False, "w_gam": 1.0,
+                              "reason": "gate rejected"}):
+            out = wpx.predict_live({"t_min": 10.0})
+        self.assertNotIn("p_legacy", out)
+        self.assertEqual(out["stack_reason"], "gate rejected")
+
+    def test_production_never_substitutes_legacy_when_gam_is_missing(self):
+        with mock.patch.object(wpx.os.path, "exists", return_value=False), \
+                mock.patch.object(wpx, "_predict_live_legacy") as legacy:
+            with self.assertRaises(FileNotFoundError):
+                wpx.predict_live({"t_min": 10.0})
+        legacy.assert_not_called()
 
 
 class TemporalCalibrationTests(unittest.TestCase):

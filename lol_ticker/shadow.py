@@ -14,12 +14,12 @@ import time
 import numpy as np
 from psycopg.types.json import Json
 
-from . import config, wpbench, wpgam, wphist
+from . import config, util, wpbench, wpgam, wphist
 
 
 log = logging.getLogger("shadow")
 RESULT_PATH = os.path.join(wpgam.OUT_DIR, "shadow_score.json")
-PROTOCOL_VERSION = "shadow_v7_champ_state"
+PROTOCOL_VERSION = "shadow_v8_full_provenance"
 DEFAULT_INTERVAL_S = 15
 CONFIRMATORY_GAMES = 100
 _SCHEMA_READY = False
@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS shadow_predictions (
     model_kind TEXT NOT NULL,
     blend_kind TEXT,
     model_sha256 TEXT NOT NULL,
+    legacy_component_sha256 TEXT,
+    stack_sha256 TEXT NOT NULL,
+    live_blend_w_gam DOUBLE PRECISION,
+    code_revision TEXT,
     blend_sha256 TEXT,
     state JSONB NOT NULL,
     markets JSONB NOT NULL,
@@ -66,6 +70,10 @@ CREATE TABLE IF NOT EXISTS shadow_predictions (
 );
 CREATE INDEX IF NOT EXISTS idx_shadow_predictions_capture
     ON shadow_predictions (protocol_id, captured_at);
+ALTER TABLE shadow_predictions ADD COLUMN IF NOT EXISTS legacy_component_sha256 TEXT;
+ALTER TABLE shadow_predictions ADD COLUMN IF NOT EXISTS stack_sha256 TEXT;
+ALTER TABLE shadow_predictions ADD COLUMN IF NOT EXISTS live_blend_w_gam DOUBLE PRECISION;
+ALTER TABLE shadow_predictions ADD COLUMN IF NOT EXISTS code_revision TEXT;
 CREATE TABLE IF NOT EXISTS shadow_outcomes (
     game_id TEXT NOT NULL,
     game_start_ts BIGINT NOT NULL,
@@ -124,7 +132,7 @@ def _protocol_config():
         "market_price": "blue-oriented midpoint captured only as a comparison benchmark",
         "valid_market": "non-stale and non-settled quote",
         "primary_metric": "game-balanced Brier on identical independent-forecast/market rows",
-        "primary_comparison": "deployed forecast (constrained-GAM + champscale fixed-weight logit blend; standalone GAM when a component is missing) versus raw platform market",
+        "primary_comparison": "holdout-gated promoted odds-free stack versus raw platform market; constrained GAM alone whenever the comparator gate is rejected",
         "uncertainty": "paired game-block bootstrap",
         "confirmatory_games_per_platform": CONFIRMATORY_GAMES,
         "confirmatory_freeze": "first score pass with 100 complete-case resolved games",
@@ -141,17 +149,8 @@ def _protocol_id(cfg):
 def _ensure_tables(conn):
     global _SCHEMA_READY
     if not _SCHEMA_READY:
-        ready = conn.execute(
-            """SELECT to_regclass('public.shadow_protocols') IS NOT NULL
-                          AND to_regclass('public.shadow_predictions') IS NOT NULL
-                          AND to_regclass('public.shadow_outcomes') IS NOT NULL
-                          AND to_regclass('public.shadow_confirmatory_games') IS NOT NULL
-                          AND EXISTS (SELECT 1 FROM pg_trigger
-                                      WHERE tgname='shadow_predictions_immutable')
-                       AS ready""").fetchone()["ready"]
-        if ready:
-            _SCHEMA_READY = True
-            return
+        # Run the idempotent DDL once per process.  Checking only table/trigger
+        # existence used to skip ADD COLUMN migrations on an older schema.
         conn.execute(SCHEMA)
         conn.commit()
         _SCHEMA_READY = True
@@ -222,19 +221,41 @@ def _sha256(path):
     return h.hexdigest()
 
 
+def _code_revision():
+    """Best-effort immutable source identifier for a local deployment."""
+    return util.source_revision(config.REPO_ROOT)
+
+
 def _artifact_versions():
     from . import wpx
     model_path = wpgam.MODEL_PATH
     blend_path = wphist.ARTIFACT_PATH
+    model_sha = _sha256(model_path)
+    stack = wpx.load_live_stack()
+    deployed_stack = bool(stack.get("deployed"))
+    legacy_sha = (_sha256(wpx.LEGACY_LIVE_MODEL_PATH)
+                  if deployed_stack else None)
+    weight = float(stack.get("w_gam", 1.0)) if deployed_stack else 1.0
+    stack_spec = {
+        "model_kind": ("%s+%s" % (wpgam.MODEL_KIND, wpx.LEGACY_LIVE_CONTRACT)
+                       if deployed_stack else wpgam.MODEL_KIND),
+        "model_sha256": model_sha,
+        "legacy_component_sha256": legacy_sha,
+        "live_blend_w_gam": weight,
+    }
+    stack_sha = (stack.get("stack_sha256") if deployed_stack else
+                 hashlib.sha256(json.dumps(
+                     stack_spec, sort_keys=True,
+                     separators=(",", ":")).encode()).hexdigest())
     out = {
-        "model_kind": wpgam.MODEL_KIND,
-        "model_sha256": _sha256(model_path),
-        # the deployed forecast is a fixed-weight logit blend with the legacy
-        # champscale artifact; freeze both component hashes on every forecast
-        "live_blend_w_gam": float(wpx.LIVE_BLEND_W_GAM),
-        "legacy_component_sha256": (_sha256(wpx.LEGACY_LIVE_MODEL_PATH)
-                                    if os.path.exists(wpx.LEGACY_LIVE_MODEL_PATH)
-                                    else None),
+        "model_kind": stack_spec["model_kind"],
+        "model_sha256": model_sha,
+        # Freeze the comparator hash only when the holdout-gated manifest
+        # actually deploys it; the current rejected stack is GAM-only.
+        "live_blend_w_gam": weight,
+        "legacy_component_sha256": legacy_sha,
+        "stack_sha256": stack_sha,
+        "code_revision": _code_revision(),
         "blend_kind": None,
         "blend_sha256": None,
     }
@@ -340,9 +361,11 @@ def _record_game(conn, protocol, game, versions):
                model_p, polymarket_p, kalshi_p, polymarket_blend_p,
                kalshi_blend_p, recommended_p, recommended_source,
                polymarket_lead_s, kalshi_lead_s, model_kind, blend_kind,
-               model_sha256, blend_sha256, state, markets)
+               model_sha256, legacy_component_sha256, stack_sha256,
+               live_blend_w_gam, code_revision, blend_sha256, state, markets)
            VALUES (%s,%s,%s,%s,to_timestamp(%s),%s,%s,%s,%s,%s,%s,
-                   %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                   %s,%s,%s,%s)
            ON CONFLICT DO NOTHING""",
         (protocol["protocol_id"], str(oriented["game_id"]), start_ts, minute,
          captured, int(frame["ts"]), captured - float(frame["ts"]),
@@ -354,6 +377,8 @@ def _record_game(conn, protocol, game, versions):
          blend.get("source") if blend else "model",
          lead("polymarket"), lead("kalshi"), versions["model_kind"],
          versions["blend_kind"], versions["model_sha256"],
+         versions["legacy_component_sha256"], versions["stack_sha256"],
+         versions["live_blend_w_gam"], versions["code_revision"],
          versions["blend_sha256"], Json(state), Json(markets)))
     conn.commit()
     log.info("shadow captured %s %s vs %s minute=%d feed_lag=%.1fs markets=%s",
@@ -522,8 +547,8 @@ def _shadow_summary(p, y, gids, t_min, bootstrap, seed):
     return out
 
 
-def score_rows(rows, bootstrap=5000):
-    result = {"resolved_rows": len(rows), "platforms": {}}
+def _score_platforms(rows, bootstrap=5000):
+    platforms = {}
     for i, platform in enumerate(("polymarket", "kalshi")):
         market_key = platform + "_p"
         blend_key = platform + "_blend_p"
@@ -531,7 +556,7 @@ def score_rows(rows, bootstrap=5000):
         blend_rows = [r for r in market_rows if r.get(blend_key) is not None]
         cohort = blend_rows or market_rows
         if not cohort:
-            result["platforms"][platform] = {
+            platforms[platform] = {
                 "games": 0, "states": 0, "confirmatory_ready": False}
             continue
         market = np.asarray([float(r[market_key]) for r in cohort])
@@ -559,7 +584,7 @@ def score_rows(rows, bootstrap=5000):
         if forecast_name == "blend":
             paired["market_minus_blend"] = paired["market_minus_forecast"]
         games = len(np.unique(gids))
-        result["platforms"][platform] = {
+        platforms[platform] = {
             "games": int(games), "states": len(cohort), "scores": summaries,
             "paired": paired, "confirmatory_target_games": CONFIRMATORY_GAMES,
             "confirmatory_ready": games >= CONFIRMATORY_GAMES,
@@ -568,12 +593,46 @@ def score_rows(rows, bootstrap=5000):
                 if r.get(platform + "_lead_s") is not None]))
                 if any(r.get(platform + "_lead_s") is not None for r in cohort) else None,
         }
+    return platforms
+
+
+def _version_key(row):
+    """Stable identity for the exact forecast stack used by one row."""
+    stack = row.get("stack_sha256")
+    if stack:
+        revision = str(row.get("code_revision") or "unknown")
+        revision_key = hashlib.sha256(revision.encode()).hexdigest()[:12]
+        return "%s@%s" % (str(stack)[:12],
+                          revision_key)
+    # Backward-compatible identity for v7 rows recorded before stack_sha256 was
+    # persisted.  Such a key is explicitly marked partial because the legacy
+    # component cannot be recovered from those rows.
+    return "partial-%s-%s" % (
+        str(row.get("model_sha256") or "none")[:12],
+        str(row.get("blend_sha256") or "none")[:12])
+
+
+def score_rows(rows, bootstrap=5000):
+    result = {"resolved_rows": len(rows),
+              "platforms": _score_platforms(rows, bootstrap)}
     versions = {}
     for row in rows:
-        key = "%s+%s" % (row["model_sha256"][:12],
-                         (row.get("blend_sha256") or "none")[:12])
+        key = _version_key(row)
         versions[key] = versions.get(key, 0) + 1
     result["artifact_versions"] = versions
+    result["by_artifact_version"] = {}
+    for key in sorted(versions):
+        cohort = [row for row in rows if _version_key(row) == key]
+        sample = cohort[0]
+        result["by_artifact_version"][key] = {
+            "rows": len(cohort),
+            "model_sha256": sample.get("model_sha256"),
+            "legacy_component_sha256": sample.get("legacy_component_sha256"),
+            "stack_sha256": sample.get("stack_sha256"),
+            "live_blend_w_gam": sample.get("live_blend_w_gam"),
+            "code_revision": sample.get("code_revision"),
+            "platforms": _score_platforms(cohort, min(bootstrap, 2000)),
+        }
     return result
 
 

@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS price_points (
     price       DOUBLE PRECISION,
     PRIMARY KEY (platform, market_id, fidelity, ts)
 );
+CREATE INDEX IF NOT EXISTS idx_price_points_market
+    ON price_points (platform, market_id, ts);
 
 -- Kalshi candlesticks
 CREATE TABLE IF NOT EXISTS candles (
