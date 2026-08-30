@@ -35,7 +35,7 @@ from . import config
 
 
 log = logging.getLogger("wpgam")
-MODEL_KIND = "wpgam_v7_champ_state"
+MODEL_KIND = "wpgam_v8_recency_series"
 OUT_DIR = os.path.join(config.REPO_ROOT, "data", "wpx")
 MODEL_PATH = os.path.join(OUT_DIR, "model_live_gam.npz")
 
@@ -60,7 +60,12 @@ CHAMP_STATE_FOLDS = 5
 PRIOR_INPUTS = ["prior_team_logit", "prior_champ_logit", "prior_champ_state"]
 # elo_gg (gol.gg-based team Elo) backs up the Oracle's Elixir ratings, whose
 # source CSV can go stale for weeks; gol.gg coverage is ~99.8% of games.
-PREGAME_FEATURES = ["elo_oe", "pelo_oe", "form_diff", "elo_gg"]
+# elo_gg_fast (K=120 gol.gg Elo) is the opponent-adjusted recent-form channel;
+# series_diff is the current match's prior-wins difference (measured +0.10
+# log-odds per game controlling Elo).  Gated 2026-08-30: validation preferred
+# both (0.14477 vs 0.14515); untouched test 0.14274 vs 0.14305.
+PREGAME_FEATURES = ["elo_oe", "pelo_oe", "form_diff", "elo_gg",
+                    "elo_gg_fast", "series_diff"]
 
 # Every feature here can be constructed identically from a historical WPX row
 # and an official-feed live state.  Differences are oriented toward blue.
@@ -228,9 +233,12 @@ def pregame_values_from_matrix(X, names):
 def pregame_values_from_live(state):
     s = dict(state)
     # Same fallback as wpx.live_vector: a missed gol.gg lookup borrows the OE
-    # Elo (near-identical scale) rather than reading as "even teams".
+    # Elo (near-identical scale) rather than reading as "even teams"; a missed
+    # fast-Elo lookup borrows the slow gol.gg Elo.
     if s.get("elo_gg") is None:
         s["elo_gg"] = s.get("elo_oe", 0.0)
+    if s.get("elo_gg_fast") is None:
+        s["elo_gg_fast"] = s.get("elo_gg", 0.0)
     return np.asarray([float(s.get(n, 0.0) or 0.0) for n in PREGAME_FEATURES], dtype=np.float64)
 
 

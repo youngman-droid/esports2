@@ -737,6 +737,7 @@ def api_live_estimate(params):
         if hasattr(live.team_priors, "_cache"):
             del live.team_priors._cache
         priors = live.team_priors(conn, g["teams"])
+        priors["series_diff"] = live.series_prior(g)
         try:
             r = live.estimate(conn, g["game_id"], priors, teams=g["teams"],
                               team_ids=g.get("team_ids"))
@@ -832,6 +833,7 @@ def api_live_series(params):
         if hasattr(live.team_priors, "_cache"):
             del live.team_priors._cache
         priors = live.team_priors(conn, g["teams"])
+        priors["series_diff"] = live.series_prior(g)
         try:
             r = live.estimate_series(conn, g["game_id"], priors, since, teams=g["teams"])
             # the feed is the authority on sides: if it disagrees with the schedule's side info, swap
@@ -840,6 +842,7 @@ def api_live_series(params):
                 g["teams"] = g["teams"][::-1]; g["team_ids"] = ids[::-1]; g["wins"] = (g.get("wins") or [])[::-1]
                 _live_mk_cache.pop(g["game_id"], None)
                 priors = live.team_priors(conn, g["teams"])
+                priors["series_diff"] = live.series_prior(g)
                 r = live.estimate_series(conn, g["game_id"], priors, since, teams=g["teams"])
         except Exception as e:
             conn.rollback()

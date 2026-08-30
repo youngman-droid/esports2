@@ -19,7 +19,7 @@ from . import config, util, wpbench, wpgam, wphist
 
 log = logging.getLogger("shadow")
 RESULT_PATH = os.path.join(wpgam.OUT_DIR, "shadow_score.json")
-PROTOCOL_VERSION = "shadow_v8_full_provenance"
+PROTOCOL_VERSION = "shadow_v9_recency_series"
 DEFAULT_INTERVAL_S = 15
 CONFIRMATORY_GAMES = 100
 _SCHEMA_READY = False
@@ -127,7 +127,7 @@ def _protocol_config():
         "historical_backfill": False,
         "sampling_unit": "first captured live frame per integer game minute",
         "sampling_cadence_s": DEFAULT_INTERVAL_S,
-        "forecast_inputs": "team ratings (OE and gol.gg Elo), draft, champion-state scores, window-health deaths, stateful Baron/Elder timers, gold share, kill recency, and game state only; no quote from the current match",
+        "forecast_inputs": "team ratings (OE and gol.gg Elo at K=30 and K=120), current-series score, draft, champion-state scores, window-health deaths, stateful Baron/Elder timers, gold share, kill recency, and game state only; no quote from the current match",
         "historical_odds": "offline teacher input only; chronological holdout gate required for deployment",
         "market_price": "blue-oriented midpoint captured only as a comparison benchmark",
         "valid_market": "non-stale and non-settled quote",
@@ -302,11 +302,13 @@ def _record_game(conn, protocol, game, versions):
     if hasattr(live.team_priors, "_cache"):
         del live.team_priors._cache
     priors = live.team_priors(conn, game["teams"])
+    priors["series_diff"] = live.series_prior(game)
     estimate = live.estimate_series(
         conn, game["game_id"], priors, since_ts=0, teams=game["teams"])
     oriented = _orient_game(game, estimate)
     if oriented["teams"] != game["teams"]:
         priors = live.team_priors(conn, oriented["teams"])
+        priors["series_diff"] = live.series_prior(oriented)
         estimate = live.estimate_series(
             conn, oriented["game_id"], priors, since_ts=0,
             teams=oriented["teams"])

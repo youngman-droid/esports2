@@ -28,6 +28,7 @@ _OE_ROW = {
 _GG_ROW = {
     "blue_team": "Alpha", "red_team": "Beta", "winner_side": "blue",
     "elo_blue_pre": 1500.0, "elo_red_pre": 1500.0,
+    "elo_blue_pre_fast": 1500.0, "elo_red_pre_fast": 1500.0,
 }
 
 
@@ -46,6 +47,13 @@ class TeamPriorTests(unittest.TestCase):
         self.assertAlmostEqual(out["pelo_oe"], 24.0 / 400.0)
         self.assertEqual(out["form_diff"], 1.0)
         self.assertAlmostEqual(out["elo_gg"], 30.0 / 400.0)
+        # the fast channel advances by its own K
+        self.assertAlmostEqual(out["elo_gg_fast"], 120.0 / 400.0)
+
+    def test_series_prior_is_oriented_blue_minus_red(self):
+        self.assertEqual(live.series_prior({"wins": [1, 0]}), 1.0)
+        self.assertEqual(live.series_prior({"wins": [0, 2]}), -2.0)
+        self.assertEqual(live.series_prior({}), 0.0)
 
     def test_golgg_elo_carries_priors_while_oe_source_is_stale(self):
         conn = _Conn([], [_GG_ROW])
@@ -104,7 +112,8 @@ class FrameStateTests(unittest.TestCase):
 
     def test_legacy_prior_clip_covers_every_live_prior_channel(self):
         from lol_ticker import wpx
-        for key in ("elo_oe", "pelo_oe", "form_diff", "elo_gg"):
+        for key in ("elo_oe", "pelo_oe", "form_diff", "elo_gg",
+                    "elo_gg_fast", "series_diff"):
             self.assertIn(key, wpx.PRIOR_CLIP)
 
     def test_frame_deaths_come_from_window_health_not_details(self):

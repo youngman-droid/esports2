@@ -285,7 +285,8 @@ FEATURE_NAMES = (
      "dead_blue", "dead_red", "nexus_tw_blue", "nexus_tw_red", "gold_rel", "gold_k_x_t2",
      "lead_x_inhib", "elder_buff", "t_since_kill", "form_diff", "exp_diff",
      "baron_up", "dragon_up", "baron_up_x_dead", "dead_diff_x_t", "rapm_team", "rapm_player",
-     "hp_pool", "hp_low_b", "hp_low_r", "lvl_k", "has_hp"]
+     "hp_pool", "hp_low_b", "hp_low_r", "lvl_k", "has_hp",
+     "elo_gg_fast", "series_diff"]
 )
 
 
@@ -311,6 +312,17 @@ def _load_game(conn, gid):
         "SELECT seq, time_s, action, side, player, target FROM golgg_events WHERE game_id=%s ORDER BY seq", (gid,))]
     g["champs"] = [r["champion"] for r in conn.execute(
         "SELECT champion FROM golgg_players WHERE game_id=%s ORDER BY slot", (gid,))]
+    # series context: this match's earlier games, won by blue minus by red
+    g["series_diff"] = 0.0
+    if g.get("match_id") is not None and g.get("game_num"):
+        for s in conn.execute("""SELECT blue_team, red_team, winner_side FROM golgg_games
+                                 WHERE match_id=%s AND game_num < %s AND winner_side IS NOT NULL""",
+                              (g["match_id"], g["game_num"])):
+            winner = s["blue_team"] if s["winner_side"] == "blue" else s["red_team"]
+            if winner == g["blue_team"]:
+                g["series_diff"] += 1.0
+            elif winner == g["red_team"]:
+                g["series_diff"] -= 1.0
     # player -> side, to know which side a kill's victim belongs to
     pside = {r["player"]: r["side"] for r in conn.execute(
         "SELECT player, side FROM golgg_players WHERE game_id=%s", (gid,))}
@@ -471,7 +483,9 @@ def _state(g, gold, cs, ev, items, idx, t_s, hpmap=None):
           (g.get("form_red") if g.get("form_red") is not None else 0.5)),
          (math.log1p(g.get("ngames_blue") or 0) - math.log1p(g.get("ngames_red") or 0)),
          baron_up, dragon_up, baron_up * dead_diff, dead_diff * t / 30.0,
-         (g.get("rapm_team") or 0.0) / 100.0, (g.get("rapm_player") or 0.0) / 100.0] + hp["features"]
+         (g.get("rapm_team") or 0.0) / 100.0, (g.get("rapm_player") or 0.0) / 100.0] + hp["features"] + \
+        [((g.get("elo_blue_pre_fast") or 1500) - (g.get("elo_red_pre_fast") or 1500)) / 400.0,
+         float(g.get("series_diff") or 0.0)]
     return x
 
 
@@ -828,7 +842,7 @@ LEGACY_LIVE_MODEL_PATH = os.path.join(OUT_DIR, "model_live.npz")
 GAM_LIVE_MODEL_PATH = os.path.join(OUT_DIR, "model_live_gam.npz")
 LIVE_MODEL_PATH = GAM_LIVE_MODEL_PATH
 LIVE_STACK_PATH = os.path.join(OUT_DIR, "live_stack.json")
-LEGACY_LIVE_CONTRACT = "champscale_live_v2"
+LEGACY_LIVE_CONTRACT = "champscale_live_v3"  # v3: + elo_gg_fast, series_diff
 # Historical WPX columns that the official live window/details feeds cannot
 # construct.  The old artifact fitted these columns and silently supplied zero
 # at inference, so its retrospective score did not describe the deployed
@@ -1072,6 +1086,9 @@ def live_vector(state, names):
         "hp_low_r": s.get("hp_low_r", 0.0), "lvl_k": s.get("lvl_k", 0.0), "has_hp": s.get("has_hp", 0.0),
         "baron_up_x_dead": s.get("baron_up", 0) * dead_diff, "dead_diff_x_t": dead_diff * t,
         "rapm_team": s.get("rapm_team", 0.0) / 100.0, "rapm_player": s.get("rapm_player", 0.0) / 100.0,
+        # a missed fast-Elo lookup borrows the slow gol.gg Elo (same scale)
+        "elo_gg_fast": s.get("elo_gg_fast", s.get("elo_gg", s.get("elo_oe", 0.0))),
+        "series_diff": s.get("series_diff", 0.0),
     }
     missing = [n for n in names if n not in v]
     if missing:
@@ -1079,11 +1096,13 @@ def live_vector(state, names):
     return np.array([v[n] for n in names], dtype=np.float64)
 
 
-PRIOR_FEATURES = {"elo_oe", "pelo_oe", "form_diff", "elo_gg", "draft", "rapm_team", "rapm_player", "exp_diff"}
+PRIOR_FEATURES = {"elo_oe", "pelo_oe", "form_diff", "elo_gg", "draft", "rapm_team", "rapm_player", "exp_diff",
+                  "elo_gg_fast", "series_diff"}
 # Live priors are clipped to the training 1st-99th percentile so an unusually
 # lopsided matchup (e.g. a new team with a 390-Elo gap and 0.1 vs 0.9 form)
 # doesn't linearly extrapolate the prior term beyond anything the fit has seen.
-PRIOR_CLIP = {"elo_oe": 0.9, "pelo_oe": 0.9, "form_diff": 0.6, "elo_gg": 0.9}
+PRIOR_CLIP = {"elo_oe": 0.9, "pelo_oe": 0.9, "form_diff": 0.6, "elo_gg": 0.9,
+              "elo_gg_fast": 1.5, "series_diff": 2.0}
 
 
 def _predict_live_legacy(state, blue_champs=(), red_champs=(), path=LEGACY_LIVE_MODEL_PATH):

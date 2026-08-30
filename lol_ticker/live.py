@@ -380,7 +380,16 @@ def market_prices(conn, teams, game_num, deciding=False):
 
 # Prior keys forwarded from team_priors into live model states; every caller
 # that filters priors for the model must use this tuple.
-PRIOR_KEYS = ("elo_oe", "pelo_oe", "form_diff", "elo_gg")
+PRIOR_KEYS = ("elo_oe", "pelo_oe", "form_diff", "elo_gg", "elo_gg_fast",
+              "series_diff")
+
+
+def series_prior(game):
+    """Prior wins in the current match, oriented blue-red (feed `wins`)."""
+    wins = list(game.get("wins") or [])
+    if len(wins) != 2:
+        return 0.0
+    return float((wins[0] or 0) - (wins[1] or 0))
 
 
 def team_priors(conn, teams):
@@ -407,7 +416,8 @@ def team_priors(conn, teams):
                                  AND g.winner IS NOT NULL
                                ORDER BY g.date_utc DESC, g.game_id DESC""").fetchall()
         gg_rows = conn.execute("""SELECT blue_team, red_team, winner_side,
-                                         elo_blue_pre, elo_red_pre
+                                         elo_blue_pre, elo_red_pre,
+                                         elo_blue_pre_fast, elo_red_pre_fast
                                   FROM golgg_games
                                   WHERE date > now() - interval '120 days'
                                     AND winner_side IS NOT NULL
@@ -450,7 +460,14 @@ def team_priors(conn, teams):
             opp = float(row["elo_red_pre"] if blue else row["elo_blue_pre"])
             won = 1.0 if row["winner_side"] == ("blue" if blue else "red") else 0.0
             exp = 1.0 / (1.0 + 10 ** ((opp - elo) / 400.0))
-            gg_vals[nt] = elo + 30.0 * (won - exp)
+            fast = row["elo_blue_pre_fast"] if blue else row["elo_red_pre_fast"]
+            fopp = row["elo_red_pre_fast"] if blue else row["elo_blue_pre_fast"]
+            if fast is not None and fopp is not None:
+                fexp = 1.0 / (1.0 + 10 ** ((float(fopp) - float(fast)) / 400.0))
+                fast_adv = float(fast) + 120.0 * (won - fexp)
+            else:
+                fast_adv = None
+            gg_vals[nt] = (elo + 30.0 * (won - exp), fast_adv)
             break
     nb, nr = norm_team(teams[0]), norm_team(teams[1])
     oe_found = nb in vals and nr in vals
@@ -473,8 +490,12 @@ def team_priors(conn, teams):
                     "form_diff": b[2] - r_[2], "elo_blue": b[0], "elo_red": r_[0],
                     "pelo_blue": b[1], "pelo_red": r_[1]})
     if gg_found:
-        out.update({"elo_gg": (gg_vals[nb] - gg_vals[nr]) / 400.0,
-                    "gg_elo_blue": gg_vals[nb], "gg_elo_red": gg_vals[nr]})
+        (b_slow, b_fast), (r_slow, r_fast) = gg_vals[nb], gg_vals[nr]
+        out.update({"elo_gg": (b_slow - r_slow) / 400.0,
+                    "gg_elo_blue": b_slow, "gg_elo_red": r_slow})
+        if b_fast is not None and r_fast is not None:
+            out.update({"elo_gg_fast": (b_fast - r_fast) / 400.0,
+                        "gg_elo_fast_blue": b_fast, "gg_elo_fast_red": r_fast})
     return out
 
 

@@ -20,6 +20,8 @@ log = logging.getLogger("wpa")
 SCHEMA = """
 ALTER TABLE golgg_games ADD COLUMN IF NOT EXISTS elo_blue_pre REAL;
 ALTER TABLE golgg_games ADD COLUMN IF NOT EXISTS elo_red_pre REAL;
+ALTER TABLE golgg_games ADD COLUMN IF NOT EXISTS elo_blue_pre_fast REAL;  -- K=120 recency variant
+ALTER TABLE golgg_games ADD COLUMN IF NOT EXISTS elo_red_pre_fast REAL;
 CREATE TABLE IF NOT EXISTS wp_model (
     feature TEXT PRIMARY KEY, coef DOUBLE PRECISION
 );
@@ -48,25 +50,37 @@ def ensure_schema(conn):
 
 # ---------------------------------------------------------------------- Elo
 
-def elo(conn, k=30.0, base=1500.0):
+def elo(conn, k=30.0, k_fast=120.0, base=1500.0):
+    """Sequential team Elo at two adaptation speeds.
+
+    K=30 carries long-run strength; the K=120 variant tracks recent form with
+    opponent adjustment (unlike a raw last-N win rate) and feeds the model's
+    elo_gg_fast prior channel.
+    """
     ensure_schema(conn)
     games = conn.execute("""SELECT game_id, blue_team, red_team, winner_side, date, match_id,
                                    game_num FROM golgg_games WHERE winner_side IS NOT NULL
                             ORDER BY date, match_id, game_num""").fetchall()
-    r = {}
+    r, rf = {}, {}
     upd = []
     for g in games:
         b, rd = r.get(g["blue_team"], base), r.get(g["red_team"], base)
-        upd.append((b, rd, g["game_id"]))
-        eb = 1 / (1 + 10 ** ((rd - b) / 400))
+        fb, fr = rf.get(g["blue_team"], base), rf.get(g["red_team"], base)
+        upd.append((b, rd, fb, fr, g["game_id"]))
         sb = 1.0 if g["winner_side"] == "blue" else 0.0
+        eb = 1 / (1 + 10 ** ((rd - b) / 400))
         r[g["blue_team"]] = b + k * (sb - eb)
         r[g["red_team"]] = rd + k * ((1 - sb) - (1 - eb))
+        ef = 1 / (1 + 10 ** ((fr - fb) / 400))
+        rf[g["blue_team"]] = fb + k_fast * (sb - ef)
+        rf[g["red_team"]] = fr + k_fast * ((1 - sb) - (1 - ef))
     with conn.cursor() as cur:
-        cur.executemany("UPDATE golgg_games SET elo_blue_pre=%s, elo_red_pre=%s WHERE game_id=%s",
+        cur.executemany("""UPDATE golgg_games SET elo_blue_pre=%s, elo_red_pre=%s,
+                           elo_blue_pre_fast=%s, elo_red_pre_fast=%s WHERE game_id=%s""",
                         upd, returning=False)
     conn.commit()
-    log.info("wpa: elo over %d games, %d teams", len(games), len(r))
+    log.info("wpa: elo over %d games, %d teams (K=%.0f and K=%.0f)",
+             len(games), len(r), k, k_fast)
     return r
 
 

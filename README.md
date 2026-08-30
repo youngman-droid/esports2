@@ -297,6 +297,22 @@ Two outcome-based models evaluate drafts and events without any market data
   `lo_champ_state` so champion-heavy calibration can also be checked
   prospectively.
 
+  The v8 contract adds two **recency prior channels**, both live-servable:
+  a second gol.gg team Elo run at K=120 (`elo_gg_fast` — opponent-adjusted
+  recent form, where a raw last-N win rate is not) and the current match's
+  prior-wins difference (`series_diff`, from the schedule's series score
+  live and match siblings historically; measured at +0.10 log-odds per
+  prior game controlling Elo over 11,076 consecutive-series pairs, matching
+  the ~2.5-point moves markets make on a game win). Gated with nested
+  chronological selection: every candidate improved the validation block,
+  the pair was selected (0.14477 vs base 0.14515), and the untouched test
+  block scores 0.14274 vs 0.14305 (paired −0.00030, 95% interval
+  −0.00075..+0.00015 — point-estimate ship, structural rationale: the
+  model previously could not see series context at all). Caution from the
+  same study: recency does not always move toward the market — faster Elo
+  *widened* the model-market gap in the motivating KT–DK case, because the
+  market's disagreement there was not about recent results.
+
   The v7 contract adds the **champion-state channel**: per-champion
   coefficients estimated champscale-style on in-game states — jointly with
   the full exploration feature set, entering as signed presence × min(t, 15
