@@ -52,27 +52,102 @@ def _get(url, params=None, key=False, allow_empty=False, timeout=30):
     return json.loads(body)
 
 
-def live_games():
-    d = _get("https://esports-api.lolesports.com/persisted/gw/getLive", {"hl": "en-US"}, key=True)
+ESPORTS_API = "https://esports-api.lolesports.com/persisted/gw"
+# Leagues whose schedule state is not flipped to inProgress by Riot ops (LPL runs
+# on Tencent's infrastructure) are still served by the live-stats feed, so games
+# whose match started recently are probed directly.
+PROBE_BEFORE_START_S = 20 * 60
+PROBE_AFTER_START_S = 5 * 3600
+_details_cache = {}   # match id -> (fetched_at, event details)
+
+
+def _game_entry(e, m, g):
+    best_of = (m.get("strategy") or {}).get("count")
+    mteams = m.get("teams", [])
+    # The match lists teams in schedule order, NOT by side; each game entry
+    # carries [{id, side}] — order blue first so everything downstream
+    # (model P(blue), market orientation, labels) refers to the real sides.
+    side = {t.get("id"): t.get("side") for t in (g.get("teams") or [])}
+    ordered = sorted(mteams, key=lambda t: 0 if side.get(t.get("id")) == "blue" else (1 if side.get(t.get("id")) == "red" else 2))
+    wins = [((t.get("result") or {}).get("gameWins") or 0) for t in ordered]
+    # deciding map: both teams one win away -> the match-winner market IS the map market
+    deciding = bool(best_of and len(wins) == 2 and wins[0] == wins[1] == (best_of - 1) // 2)
+    return {"game_id": g["id"], "league": e.get("league", {}).get("name"),
+            "teams": [t.get("name") for t in ordered], "team_ids": [t.get("id") for t in ordered],
+            "number": g.get("number"), "best_of": best_of, "wins": wins, "deciding": deciding,
+            "sides_known": all(side.get(t.get("id")) in ("blue", "red") for t in mteams)}
+
+
+def _feed_in_game(game_id, now=None):
+    """True when the live-stats feed serves a frame that is not finished for
+    this game id (the feed answers 204 before load-in)."""
+    now = time.time() if now is None else now
+    t = int(now - 60) // 10 * 10
+    try:
+        w = _get(FEED + "/window/" + str(game_id), {"startingTime": _iso(t)}, allow_empty=True, timeout=10)
+    except Exception as ex:
+        log.warning("feed probe %s failed: %s", game_id, ex)
+        return False
+    frames = (w or {}).get("frames") or []
+    return bool(frames) and frames[-1].get("gameState") != "finished"
+
+
+def _probe_schedule_games(known, now=None):
+    """Discover in-progress games the schedule still lists as unstarted by
+    probing the feed for matches around their start time."""
+    now = time.time() if now is None else now
+    try:
+        d = _get(ESPORTS_API + "/getSchedule", {"hl": "en-US"}, key=True)
+    except Exception as ex:
+        log.warning("getSchedule failed: %s", ex)
+        return []
+    out = []
+    for e in d.get("data", {}).get("schedule", {}).get("events", []):
+        # LPL schedule states are unreliable (a Bo5 was marked completed at 1-0),
+        # so only the start-time window filters candidates.
+        if e.get("type") != "match":
+            continue
+        try:
+            start = _ts(e["startTime"])
+        except (KeyError, ValueError):
+            continue
+        if not (start - PROBE_BEFORE_START_S <= now <= start + PROBE_AFTER_START_S):
+            continue
+        mid = (e.get("match") or {}).get("id")
+        if not mid:
+            continue
+        cached = _details_cache.get(mid)
+        if cached and now - cached[0] < 60:
+            ev = cached[1]
+        else:
+            try:
+                ev = _get(ESPORTS_API + "/getEventDetails", {"hl": "en-US", "id": mid}, key=True)["data"]["event"]
+            except Exception as ex:
+                log.warning("getEventDetails %s failed: %s", mid, ex)
+                continue
+            _details_cache[mid] = (now, ev)
+        m = ev.get("match") or {}
+        for g in m.get("games", []):
+            if g.get("state") in ("completed", "unneeded") or g["id"] in known:
+                continue
+            if _feed_in_game(g["id"], now):
+                entry = _game_entry(ev, m, g)
+                entry["discovered_by"] = "feed_probe"
+                out.append(entry)
+                break   # one live game per match
+    return out
+
+
+def live_games(probe=True):
+    d = _get(ESPORTS_API + "/getLive", {"hl": "en-US"}, key=True)
     out = []
     for e in d.get("data", {}).get("schedule", {}).get("events", []):
         m = e.get("match", {})
-        best_of = (m.get("strategy") or {}).get("count")
-        mteams = m.get("teams", [])
         for g in m.get("games", []):
             if g.get("state") == "inProgress":
-                # The match lists teams in schedule order, NOT by side; each game entry
-                # carries [{id, side}] — order blue first so everything downstream
-                # (model P(blue), market orientation, labels) refers to the real sides.
-                side = {t.get("id"): t.get("side") for t in (g.get("teams") or [])}
-                ordered = sorted(mteams, key=lambda t: 0 if side.get(t.get("id")) == "blue" else (1 if side.get(t.get("id")) == "red" else 2))
-                wins = [((t.get("result") or {}).get("gameWins") or 0) for t in ordered]
-                # deciding map: both teams one win away -> the match-winner market IS the map market
-                deciding = bool(best_of and len(wins) == 2 and wins[0] == wins[1] == (best_of - 1) // 2)
-                out.append({"game_id": g["id"], "league": e.get("league", {}).get("name"),
-                            "teams": [t.get("name") for t in ordered], "team_ids": [t.get("id") for t in ordered],
-                            "number": g.get("number"), "best_of": best_of, "wins": wins, "deciding": deciding,
-                            "sides_known": all(side.get(t.get("id")) in ("blue", "red") for t in mteams)})
+                out.append(_game_entry(e, m, g))
+    if probe:
+        out.extend(_probe_schedule_games({g["game_id"] for g in out}))
     return out
 
 
