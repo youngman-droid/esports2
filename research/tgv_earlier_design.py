@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from lol_ticker.tgv_reconstruction import PublicDraftModel
+from research.tgv_reconstruction import PublicDraftModel
 
 
 def main():

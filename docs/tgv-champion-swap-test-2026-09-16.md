@@ -40,6 +40,6 @@ Champion weights are conditional on the rest of each model. A direct swap may re
 
 ## Reproduction and verification
 
-Run from the repository root: `PYTHONPATH=. python3 scripts/tgv_champion_swap_test.py`.
+Run from the repository root: `PYTHONPATH=. python3 research/tgv_champion_swap_test.py`.
 
 The stored baseline was reconstructed from its coefficients and Elo baseline for every evaluated map; maximum probability discrepancy was 9.48e−8. Inputs are the saved production snapshot, the September TGV catalog and soloqueue table, and the prior frozen draft/comfort experiment. Detailed patch results, confidence intervals and limitations are in `data/tgv/champ-swap-test/report.json`; per-map outputs are in `data/tgv/champ-swap-test/predictions.json`.

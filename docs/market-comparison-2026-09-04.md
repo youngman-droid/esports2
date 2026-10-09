@@ -101,7 +101,7 @@ an edge; the existing target remains 100 eligible games per exchange.
 
 ## Reproduction and validation
 
-Run `python3 scripts/wpx_market_v9.py --output data/wpx/market_v9_rerun`.
+Run `python3 research/wpx_market_v9.py --output data/wpx/market_v9_rerun`.
 The runner uses a read-only, repeatable-read database transaction and the
 saved frozen and monthly-refit prediction arrays; it does not train models,
 enroll live games, or alter the evaluation registry. The main tables above

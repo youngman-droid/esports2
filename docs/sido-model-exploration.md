@@ -23,7 +23,7 @@ evidence that substituting SIDO improves our forecasts. See §§5–7.
   recency and series priors, champion outcome effects, an additional champion
   state score, and role-specific gold allocation.
 - `lol_ticker/wpx.py:build_rapm`: past-only, recency-weighted gold-margin ratings.
-- `scripts/wpx_playerchamp.py`: earlier experiments with player/champion win
+- `research/wpx_playerchamp.py`: earlier experiments with player/champion win
   history and GD@15. Merely adding champion familiarity is not a new proposal.
 
 What is missing is a performance rating learned jointly with role/champion
@@ -33,7 +33,7 @@ role-gold coefficients are shared across champions.
 
 ## Experiment completed
 
-`scripts/wpx_sido.py` reads PostgreSQL in a consistent read-only transaction.
+`research/wpx_sido.py` reads PostgreSQL in a consistent read-only transaction.
 It fits monthly player ratings using only dates before the month starts, with
 150-day exponential decay. Player effects have ridge penalty 60, champion
 effects 30; these settings were fixed before validation. This is a Gaussian
@@ -126,7 +126,7 @@ game registry and live monotonicity gates.
 
 ## Reproduction and artifacts
 
-Run `python3 scripts/wpx_sido.py` and
+Run `python3 research/wpx_sido.py` and
 `python3 -m unittest tests.test_wpx_sido`. The script refuses a dataset extending
 beyond the registry's consumed date. Three tests passed: same-month/future
 target isolation, phase increments/short-game exclusion, and missing-gold

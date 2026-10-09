@@ -95,7 +95,7 @@ module or fetching new outcomes.
 
 ## Historical screen and reproducibility
 
-`scripts/wpx_draft_context.py` reproduces the saved player-controlled draft
+`research/wpx_draft_context.py` reproduces the saved player-controlled draft
 baseline's validation and later metrics before fitting any residual. It uses
 28,463 already-consumed maps from January 1, 2024 through September 2, 2026:
 20,332 training games before January 16, 3,773 validation games before May 1,
@@ -134,7 +134,7 @@ python3 scripts/composition_catalog.py \
   --consumed-input data/wpx/draft_comfort_comparison_20260916/inputs.json
 python3 scripts/fearless_pools.py --out data/fearless/offline_pool_reproduction.json
 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
-  python3 scripts/wpx_draft_context.py --out data/wpx/draft_context_reproduction
+  python3 research/wpx_draft_context.py --out data/wpx/draft_context_reproduction
 python3 -m unittest tests.test_wpcomposition tests.test_wpfearless \
   tests.test_composition_catalog tests.test_fearless_pools
 ```

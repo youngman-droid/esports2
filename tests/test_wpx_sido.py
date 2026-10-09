@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from scripts import wpx_sido as sido
+from research import wpx_sido as sido
 
 
 def roster(game_id):

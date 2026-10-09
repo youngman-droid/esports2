@@ -1,7 +1,7 @@
 """Match two-game summary constraints to local drafts, retaining both assignments."""
 import json
 from pathlib import Path
-from lol_ticker.tgv_reconstruction import PublicDraftModel
+from research.tgv_reconstruction import PublicDraftModel
 
 
 def main():

@@ -19,7 +19,7 @@ from psycopg.rows import dict_row
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lol_ticker import config, wpcombat, wpgam, wpbench
-from scripts import wpx_methods_v9 as methods
+from research import wpx_methods_v9 as methods
 
 log = logging.getLogger("combat")
 SPECS = {"role_health": {"l2": 800., "smooth": 70.},

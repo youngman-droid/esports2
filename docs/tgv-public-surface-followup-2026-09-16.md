@@ -16,7 +16,7 @@ It contains model `adb3014f1f3dc1ae0d701cc0453d51b61dc691d87e99ff8b6640744ca6fa9
 
 ## New numerical constraints from draft gaps
 
-`scripts/tgv_gap_constraints.py` recovers the central score(s) from each team's published median score and median sigmoid lift. For an even sample, let the two central scores be m-d and m+d, and let L be the median probability minus one half. Then:
+`research/tgv_gap_constraints.py` recovers the central score(s) from each team's published median score and median sigmoid lift. For an even sample, let the two central scores be m-d and m+d, and let L be the median probability minus one half. Then:
 
 `cosh(d) = sinh(m)/(2L) - cosh(m)`.
 
@@ -46,7 +46,7 @@ The optional roster is a role-to-list-of-champion-IDs filter. `{top:[1,2], jungl
 
 Normal guest `EngineAccessQuery(mode:puzzle)` with operation `leaderboards` succeeds. Its response provides puzzle leaderboard metadata rather than draft assignments or model breakdowns. A read-only `counterfactual` for a publicly listed current choice failed with the generic “Puzzle request failed. Refresh and try again.” Repeating once with the normal client requestId and clientCacheHit fields also failed. No claim about the underlying cause is supported; no game was started or score submitted.
 
-`scripts/tgv_two_game_constraints.py` matches the three teams with exactly two scored games to two local covered-patch games each, bounded by TGV's team-specific lastPlayedAt. Candidates are Only The Family (August 20, patch 16.16), Fortress Esports (July 15, patch 16.13), and Miðgarð Esports (August 28, patch 16.16). These are candidate source matches, not verified TGV game IDs. Only The Family has later local games not reflected in that TGV team record; they are excluded explicitly.
+`research/tgv_two_game_constraints.py` matches the three teams with exactly two scored games to two local covered-patch games each, bounded by TGV's team-specific lastPlayedAt. Candidates are Only The Family (August 20, patch 16.16), Fortress Esports (July 15, patch 16.13), and Miðgarð Esports (August 28, patch 16.16). These are candidate source matches, not verified TGV game IDs. Only The Family has later local games not reflected in that TGV team record; they are excluded explicitly.
 
 For each candidate draft, subtract independently recovered unary, matchup, and synergy from each possible summary score. The remaining value represents composition plus comfort in the team's perspective, assuming the source match and published gap method align. Both score assignments are retained for every team. Smaller residuals are not treated as proof of the correct assignment. Results are saved in `two-game-draft-constraints.json`.
 
@@ -66,7 +66,7 @@ Downloaded and validated all 865 client-addressed legacy relation files, 43,971,
 
 Compared 748,225 matchup cells, 595,120 synergy cells, and 5,190 overlapping unary cells with the live export. Old/new correlations are 0.122, 0.390, and 0.469 respectively. A fitted global affine transformation leaves maximum residuals 0.540, 0.089, and 1.442. The old model therefore cannot be treated as a simple rescaling of the current model. Its extra patches 16.10–16.11 do not supply those patches for the current model.
 
-Reproduction: `python3 scripts/tgv_legacy_scrape.py`, then `python3 scripts/tgv_legacy_compare.py`. Both completed successfully. Full comparison statistics are in `data/tgv/20260916/legacy-static/comparison.json`.
+Reproduction: `python3 research/tgv_legacy_scrape.py`, then `python3 research/tgv_legacy_compare.py`. Both completed successfully. Full comparison statistics are in `data/tgv/20260916/legacy-static/comparison.json`.
 
 ## Conditional composition from historical comfort
 
@@ -74,6 +74,6 @@ Queried the local database in a read-only transaction for the 60 player/role/cha
 
 The timing convention materially affects the inference: the first Only The Family draft has historical comfort -0.1250511 versus export-time comfort -0.0321384, a difference of 0.0929127 logits. The public gap metadata does not resolve this convention. Both score assignments and both timing scenarios are preserved in `candidate-composition-scenarios.json`; no conditional residual is labeled an independently recovered composition factor. The six candidate drafts are insufficient to identify the full composition tensor even if alignment and timing were resolved.
 
-Reproduction: `python3 scripts/tgv_candidate_composition.py` with saved count inputs. The read-only SQL source is archived as `data/tgv/20260916/historical-comfort-source.py`.
+Reproduction: `python3 research/tgv_candidate_composition.py` with saved count inputs. The read-only SQL source is archived as `data/tgv/20260916/historical-comfort-source.py`.
 
 At this point no additional model-data route has been identified in the downloaded current client, its embedded API schema, manifest, sitemap, or legacy static data. This is a bounded observed-surface inventory, not proof of every possible response on the server. Further exact reconstruction needs additional independent draft evaluations or authorized factor-export access; unrelated payment/account APIs and gated private records do not serve this objective.

@@ -20,8 +20,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lol_ticker import wpadapt as wa, wpbench, wpgam, wpresource
-from scripts import wpx_methods_v9 as methods
-from scripts.wpx_adapt import load_extra
+from research import wpx_methods_v9 as methods
+from research.wpx_adapt import load_extra
 
 
 log = logging.getLogger("pooled_resource")

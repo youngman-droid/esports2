@@ -19,7 +19,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lol_ticker import wpadapt, wpbench, wpcandidate as candidate, wpexposure, wpgam, wpresource, wpaudit
-from scripts.wpx_adapt import load_extra
+from research.wpx_adapt import load_extra
 
 log = logging.getLogger("fit_candidate")
 ALLOWED_FAMILIES = {"core", "pooled_role", "pooled_constant", "pooled_smooth"}

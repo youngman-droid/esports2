@@ -4,7 +4,7 @@ Follow-up: [reverse engineering the public model assets](tgv-reverse-engineering
 
 The closest comparable output is a neutral-team draft advantage: champion selection plus player–champion comfort, with team strength and blue-side bias removed. We now have a reproducible isolated scorer and 4,358 historical per-map decompositions. The comfort proxies add no convincing predictive improvement after controlling for overall player strength and experience. TGV's public material still does not provide matched forecasts or validation sufficient for a numerical accuracy comparison.
 
-This corrects the earlier comparison: `scripts/wpx_playerchamp.py` already experimented with player/champion win history, experience, unfamiliar picks and GD@15. Those experiments were not part of the deployed draft model. Calling comfort an entirely new idea for this repository was too broad.
+This corrects the earlier comparison: `research/wpx_playerchamp.py` already experimented with player/champion win history, experience, unfamiliar picks and GD@15. Those experiments were not part of the deployed draft model. Calling comfort an entirely new idea for this repository was too broad.
 
 **What was isolated**
 
@@ -65,7 +65,7 @@ The meaningful remaining structural gaps are explicit composition features and T
 
 **Artifacts and verification**
 
-- Runner: `scripts/draft_comfort_compare.py`.
+- Runner: `research/draft_comfort_compare.py`.
 - Primary results: `data/wpx/draft_comfort_comparison_20260916/player_controlled/report.json`.
 - Saved coefficients/scales: `player_controlled/model.npz` beneath the same directory.
 - Per-map draft/comfort logits, neutral probability and full probability: `player_controlled/scores.json`.
@@ -76,7 +76,7 @@ Three tests passed for same-day/future outcome isolation, side reversal, and uns
 Reproduce into a new output directory, without database access:
 
 ```sh
-OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python3 scripts/draft_comfort_compare.py \
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python3 research/draft_comfort_compare.py \
   --input data/wpx/draft_comfort_comparison_20260916/inputs.json \
   --out data/wpx/draft_comfort_reproduction
 ```

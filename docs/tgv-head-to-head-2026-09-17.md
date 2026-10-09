@@ -13,13 +13,13 @@ Partially: **exact where exported, ~86% of the score on real pro drafts.**
 | 56 published checksum drafts, unary+matchup+synergy | corr 0.997, residual sd 0.091 logit (inflated by artificial drafts with unary sd 1.2) |
 | **New: 281 teams' published last-10 median draft score, rebuilt from our OE drafts** | **r = 0.933, R² = 0.86, RMSE 0.058 vs signal sd 0.157** |
 
-The last row is the first end-to-end test on real professional drafts (`scripts/tgv_fidelity_gaps.py`; team IDs are OE IDs, game counts align for 281 of 305 matched teams). Build-up: unary alone r = 0.42 → + matchup + synergy r = 0.895 → + recovered comfort curve with historical counts r = 0.933 (export-time counts 0.926, so historical timing fits slightly better). The remaining ~14% of variance is the unrecovered composition term plus game-set mismatches. Everything below therefore tests **TGV minus composition**; side bias is irrelevant because our controls carry an intercept.
+The last row is the first end-to-end test on real professional drafts (`research/tgv_fidelity_gaps.py`; team IDs are OE IDs, game counts align for 281 of 305 matched teams). Build-up: unary alone r = 0.42 → + matchup + synergy r = 0.895 → + recovered comfort curve with historical counts r = 0.933 (export-time counts 0.926, so historical timing fits slightly better). The remaining ~14% of variance is the unrecovered composition term plus game-set mismatches. Everything below therefore tests **TGV minus composition**; side bias is irrelevant because our controls carry an intercept.
 
 Notable: in pro drafts most of TGV's draft variance is **matchups/synergy, not champion strength** (score sd 0.35 vs unary 0.17).
 
 ## 2. Head-to-head on historical maps (biased toward TGV)
 
-`scripts/tgv_vs_ours_headtohead.py`: 2,885 maps, 2026-06-17 → 09-15, patches 16.12–16.17. Ours = outcome draft model refit walk-forward at half-month cutoffs (every map out of sample). TGV = fixed Sept 15 release (has seen every map before Sept 14). Both scores are added, unscaled, to the same controls-only offset (team Elo + player history). Log loss change vs controls, cluster-bootstrap 95% CI:
+`research/tgv_vs_ours_headtohead.py`: 2,885 maps, 2026-06-17 → 09-15, patches 16.12–16.17. Ours = outcome draft model refit walk-forward at half-month cutoffs (every map out of sample). TGV = fixed Sept 15 release (has seen every map before Sept 14). Both scores are added, unscaled, to the same controls-only offset (team Elo + player history). Log loss change vs controls, cluster-bootstrap 95% CI:
 
 | Score | Δ log loss | Fitted slope (1 = well scaled) |
 |---|---:|---:|
@@ -35,7 +35,7 @@ TGV − ours (champion terms): Brier −0.0030 [−0.0058, −0.0003]. Joint reg
 
 ## 3. Leak test: that edge is mostly in-sample fit
 
-`scripts/tgv_leak_test.py` scores the same maps with TGV's **older Sept 3 release** (all 865 relation files were already scraped). Slopes refit per block so the probit/logit difference cancels.
+`research/tgv_leak_test.py` scores the same maps with TGV's **older Sept 3 release** (all 865 relation files were already scraped). Slopes refit per block so the probit/logit difference cancels.
 
 | Block | Legacy release (Sept 3) | Current release (Sept 15) | Ours (always OOS) |
 |---|---:|---:|---:|
@@ -67,9 +67,9 @@ TGV − ours: −0.0025 [−0.0133, +0.0093]. Point estimate favors TGV; the int
 Caveats: TGV scored without composition (§1); controls are the compact Elo/player set, not the deployed priors; slopes in §3 are fit in-block (one parameter); September blocks are all patch 16.17. Database read-only; no model changed.
 
 ```sh
-PYTHONPATH=. python3 scripts/tgv_fidelity_gaps.py
-OPENBLAS_NUM_THREADS=1 PYTHONPATH=. python3 scripts/tgv_vs_ours_headtohead.py
-OPENBLAS_NUM_THREADS=1 PYTHONPATH=. python3 scripts/tgv_leak_test.py
+PYTHONPATH=. python3 research/tgv_fidelity_gaps.py
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. python3 research/tgv_vs_ours_headtohead.py
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. python3 research/tgv_leak_test.py
 ```
 
 Outputs: `data/tgv/20260916/fidelity-draft-gaps.json`, `data/tgv/head-to-head/{report,predictions,leak-test}.json`.

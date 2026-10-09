@@ -2,7 +2,7 @@
 import itertools
 import json
 from pathlib import Path
-from lol_ticker.tgv_reconstruction import PublicDraftModel
+from research.tgv_reconstruction import PublicDraftModel
 
 
 def main():

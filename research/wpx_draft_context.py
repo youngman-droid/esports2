@@ -21,7 +21,7 @@ from scipy.special import expit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lol_ticker import wpcomposition as composition, wpfearless as fearless
-from scripts import draft_comfort_compare as control
+from research import draft_comfort_compare as control
 
 
 def sha(path):
@@ -176,7 +176,7 @@ def main():
     output = Path(args.out)
     output.mkdir(parents=True, exist_ok=False)
     source_paths = [Path(__file__), Path(composition.__file__), Path(fearless.__file__),
-                    Path("lol_ticker/wpresidual.py"), Path("scripts/draft_comfort_compare.py"), Path("lol_ticker/draft.py"),
+                    Path("lol_ticker/wpresidual.py"), Path("research/draft_comfort_compare.py"), Path("lol_ticker/draft.py"),
                     Path(args.input), Path(args.baseline_dir) / "model.npz", Path(args.baseline_dir) / "report.json"]
     if args.fearless_bundles:
         source_paths.append(Path(args.fearless_bundles))

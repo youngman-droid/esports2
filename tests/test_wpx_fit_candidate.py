@@ -7,7 +7,7 @@ from unittest import mock
 import numpy as np
 
 from lol_ticker import wpcandidate as candidate, wpgam, wpresource, wpbench
-from scripts import wpx_fit_candidate as final_fit
+from research import wpx_fit_candidate as final_fit
 from tests import test_wpgam as gam_tests, test_wpresource as resource_tests
 
 

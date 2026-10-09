@@ -18,7 +18,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lol_ticker import wpgam, wpcombined, wpbench, sqpairs
-from scripts import wpx_combat, wpx_combinations
+from research import wpx_combat, wpx_combinations
 
 
 ROOT = Path(__file__).resolve().parents[1]

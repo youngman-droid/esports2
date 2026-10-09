@@ -1,10 +1,11 @@
 """Re-evaluate the shipped odds-free models (5-fold by game) + fair minute-mark
 comparison vs the markets, and write data/wpx/results.json for the dashboard.
-Usage: python3 scripts/wpx_eval.py   (~4-6 min)"""
+Usage: python3 research/wpx_eval.py   (~4-6 min)"""
 import json, logging, os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-from lol_ticker import db, wpbench, wpblend, wpdeploy, wpgam, wpx, wpx_fair
+from lol_ticker import db, wpbench, wpblend, wpdeploy, wpgam, wpx
+from research import wpx_fair
 
 ONLY = ["champscale_reg(l2=800,cap15)", "champscale_reg(l2=200,cap25)", "logit_rich_v3_xt"]
 FAIR = ["champscale_reg(l2=800,cap15)"]

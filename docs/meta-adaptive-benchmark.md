@@ -160,7 +160,7 @@ tree fits completed, and predictions were finite; final models passed save/load 
 
 - `lol_ticker/wpadapt.py`: experimental models, temporal weights, category
   encoding, calibration, serialization and prediction helpers.
-- `scripts/wpx_adapt.py`: search, frozen-finalist diagnostics and monthly replay.
+- `research/wpx_adapt.py`: search, frozen-finalist diagnostics and monthly replay.
 - `tests/test_wpadapt.py`: new correctness tests.
 - `requirements-experiments.txt`: optional LightGBM 4.6.0 dependency.
 - `data/wpx/adapt_v2/`: plans, trial records, selection, models, predictions,
@@ -169,9 +169,9 @@ tree fits completed, and predictions were finite; final models passed save/load 
 Using an environment with the experiment requirements installed:
 
 ```bash
-python scripts/wpx_adapt.py
-python scripts/wpx_adapt.py --audit-development
-python scripts/wpx_adapt.py --rolling
+python research/wpx_adapt.py
+python research/wpx_adapt.py --audit-development
+python research/wpx_adapt.py --rolling
 python -m unittest tests.test_wpadapt tests.test_wpbench tests.test_wpx_sido
 ```
 

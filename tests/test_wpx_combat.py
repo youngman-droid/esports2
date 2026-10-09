@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from scripts import wpx_combat as runner
+from research import wpx_combat as runner
 
 
 def fixture():

@@ -36,7 +36,7 @@ Day-only source dates are conservative UTC-day proxies, not precise timestamps.
 The corrected archive contains rating differences and an experience difference,
 but lacks the eight certified per-side date/roster/availability/rating inputs
 required for this policy. An experience difference cannot recover both sample
-counts. `scripts/wpx_confidence.py` records that absence and saves the candidate
+counts. `research/wpx_confidence.py` records that absence and saves the candidate
 policy/source; it deliberately reports no historical accuracy score.
 
 Integration, with the current forecast still unchanged:
@@ -66,7 +66,7 @@ at or after 20, and every uncovered draft, returns the baseline probability
 exactly. Ridge 300, adjacent-knot penalty 70 and the 20-minute endpoint were
 fixed before the screen. There is no constant late-game offset or core refit.
 
-`scripts/wpx_sqearly.py` uses only the corrected, consumed archive through
+`research/wpx_sqearly.py` uses only the corrected, consumed archive through
 September 2 and hash-verified chronological corrected-core caches. It does not
 query PostgreSQL or the network. Since SQ coverage begins after patch 16.8,
 the pre-May fitting blocks cannot train this channel. August is the
@@ -121,8 +121,8 @@ Completed artifacts:
   coverage, paired scores and reproduction metadata.
 
 ```sh
-python3 scripts/wpx_confidence.py --out data/wpx/confidence_reproduction
+python3 research/wpx_confidence.py --out data/wpx/confidence_reproduction
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
-  python3 scripts/wpx_sqearly.py --out data/wpx/sqearly_reproduction
+  python3 research/wpx_sqearly.py --out data/wpx/sqearly_reproduction
 python3 -m unittest tests.test_wpconfidence tests.test_wpsqearly tests.test_sqpairs
 ```

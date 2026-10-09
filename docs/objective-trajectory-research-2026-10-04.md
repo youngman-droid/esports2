@@ -92,7 +92,7 @@ time-varying coefficients, training-only RMS transforms, and fixed ridge 800
 and adjacent-knot penalty 70. The baseline's original earlier-block Platt
 transform is shared; scored dates do not refit either stack or calibration.
 
-`scripts/wpx_objective.py` and `scripts/wpx_trend.py` require the hash-matched,
+`research/wpx_objective.py` and `research/wpx_trend.py` require the hash-matched,
 causally audited corrected archive and its saved chronological core caches.
 The archive is restricted to already-consumed dates. Resource hashes and
 individual/team gold consistency are checked. Objective source-event inputs
@@ -102,13 +102,13 @@ explicit assumption even after those checks. There are no patch-certified
 spawn profiles or synchronous historical readiness in the initial screen.
 
 ```sh
-python3 scripts/wpx_trend.py --coverage-only --out data/wpx/trend_new_coverage
-python3 scripts/wpx_objective.py --coverage-only --read-only-events \
+python3 research/wpx_trend.py --coverage-only --out data/wpx/trend_new_coverage
+python3 research/wpx_objective.py --coverage-only --read-only-events \
   --out data/wpx/objective_new_coverage
-python3 scripts/wpx_trend.py --out data/wpx/trend_new_screen
-python3 scripts/wpx_objective.py --events-json /absolute/path/objective_events.json \
+python3 research/wpx_trend.py --out data/wpx/trend_new_screen
+python3 research/wpx_objective.py --events-json /absolute/path/objective_events.json \
   --out data/wpx/objective_new_screen
-python3 scripts/wpx_opportunity_audit.py --out data/wpx/trend_new_screen
+python3 research/wpx_opportunity_audit.py --out data/wpx/trend_new_screen
 python3 -m unittest tests.test_wpobjective tests.test_wptrend tests.test_wpresidual
 ```
 

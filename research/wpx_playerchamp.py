@@ -12,7 +12,8 @@ import json, logging, os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from collections import defaultdict
-from lol_ticker import db, wpx, wpx_fair
+from lol_ticker import db, wpx
+from research import wpx_fair
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("pc")
 conn = db.connect()

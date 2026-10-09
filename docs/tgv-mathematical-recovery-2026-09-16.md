@@ -24,7 +24,7 @@ At action 18, Blue has three published alternatives. Each leaves three legal ter
 
 This yields nine inequalities and three equality-disjunction constraints on a 3-by-3 terminal composition table. The known row from action 19 passes this check exactly up to numerical precision. No choice of the unknown minimizing response is silently assumed.
 
-Reproduction: `PYTHONPATH=. python3 scripts/tgv_terminal_constraints.py`. Numeric results and full role-ordered drafts are in `data/tgv/20260916/terminal-composition-constraints.json`.
+Reproduction: `PYTHONPATH=. python3 research/tgv_terminal_constraints.py`. Numeric results and full role-ordered drafts are in `data/tgv/20260916/terminal-composition-constraints.json`.
 
 ## Low-dimensional checksum hypotheses
 
@@ -32,7 +32,7 @@ Tested constant offsets, global component adjustments, and regularized individua
 
 A minimum-norm additive correction can interpolate all 56 checksums to 2.78e-16 maximum error, but its design matrix has rank 56 for 6,055 unknowns. This is an explicit example of why exact interpolation alone is not recovery. The saved correction is diagnostic and has not been installed in any predictor.
 
-Reproduction: `PYTHONPATH=. python3 scripts/tgv_math_constraints.py`. Results: `data/tgv/20260916/math-constraint-diagnostics.json`.
+Reproduction: `PYTHONPATH=. python3 research/tgv_math_constraints.py`. Results: `data/tgv/20260916/math-constraint-diagnostics.json`.
 
 Next mathematical step: extend terminal enumeration to earlier minimax states and use their extremum constraints to constrain a structured composition function. Any structural assumptions must be tested against observations not used to fit them.
 
@@ -48,7 +48,7 @@ An inverse-minimax mixed-integer program tests composition hypotheses by fitting
 | Independent champion effects | 4 | 0.05193373 | 0 (time limit) |
 | Arbitrary blue-team effect minus arbitrary red-team effect | 1 | 0.04249998 | 0.04249998 |
 
-The bound-4 run did not prove optimality and is not evidence of an unbounded impossibility. The globally solved bound-1 cases reject only their explicitly bounded hypotheses. These are numerical MILP certificates with ordinary solver tolerances, not symbolic proofs. Files: `inverse-minimax-additive-bound1.json`, `inverse-minimax-additive-bound4.json`, `inverse-minimax-team-bound1.json`. Reproduction: `PYTHONPATH=. python3 scripts/tgv_inverse_minimax.py --structure champion|team --bound 1 --seconds 45` (new filenames use champion instead of additive).
+The bound-4 run did not prove optimality and is not evidence of an unbounded impossibility. The globally solved bound-1 cases reject only their explicitly bounded hypotheses. These are numerical MILP certificates with ordinary solver tolerances, not symbolic proofs. Files: `inverse-minimax-additive-bound1.json`, `inverse-minimax-additive-bound4.json`, `inverse-minimax-team-bound1.json`. Reproduction: `PYTHONPATH=. python3 research/tgv_inverse_minimax.py --structure champion|team --bound 1 --seconds 45` (new filenames use champion instead of additive).
 
 ## Bound-free rejection of independent champion effects
 
@@ -68,7 +68,7 @@ Define `Q(m,b) = min_r[K(m,b,r)+C(r)]`. Action 18 then identifies every beta(b),
 
 The discrepancies are much larger than the engine/review numeric difference. This rejects the independent-mid-plus-bot effect hypothesis invariant to red response, without assumptions about coefficient magnitude. It does not separate within-team nonlinear effects from opposing-team coupling; those remain candidate explanations.
 
-Reproduction: `PYTHONPATH=. python3 scripts/tgv_additivity_identity.py`; data: `additivity-identity-check.json`. Next: introduce structured interactions and use the same extremum constraints to determine which additional terms the data requires.
+Reproduction: `PYTHONPATH=. python3 research/tgv_additivity_identity.py`; data: `additivity-identity-check.json`. Next: introduce structured interactions and use the same extremum constraints to determine which additional terms the data requires.
 
 ## Structured opposing-pick interaction fit
 
@@ -89,7 +89,7 @@ Withheld action-17 Ezreal and Aphelios values and fitted the other 19:
 
 The minimum-L1 solution was globally solved within the stated bounded hypothesis, with coefficient norm 0.55108508. Regularization helps these two withheld values, but residual error remains far above numerical precision. These are exploratory checks on one puzzle, not an independent dataset or proof of TGV's parameterization.
 
-Reproduction: `PYTHONPATH=. python3 scripts/tgv_inverse_minimax.py --structure team --cross bottop --holdout 17:81,17:523 --regularize --seconds 45`. Files use the `inverse-minimax-team-bound1` prefix with cross, holdout, and regularized suffixes.
+Reproduction: `PYTHONPATH=. python3 research/tgv_inverse_minimax.py --structure team --cross bottop --holdout 17:81,17:523 --regularize --seconds 45`. Files use the `inverse-minimax-team-bound1` prefix with cross, holdout, and regularized suffixes.
 
 ### Explicit non-uniqueness witness
 
@@ -123,9 +123,9 @@ A separate evaluator applies bans and picks in their original order and recursiv
 
 Reproduction:
 
-- `PYTHONPATH=. python3 scripts/tgv_ban_inverse.py --starts 64 --cross bottop`
-- `PYTHONPATH=. python3 scripts/tgv_ban_inverse.py --starts 16 --cross all`
-- `python3 scripts/tgv_replay_bans.py data/tgv/20260916/ban-inverse-all.json`
+- `PYTHONPATH=. python3 research/tgv_ban_inverse.py --starts 64 --cross bottop`
+- `PYTHONPATH=. python3 research/tgv_ban_inverse.py --starts 16 --cross all`
+- `python3 research/tgv_replay_bans.py data/tgv/20260916/ban-inverse-all.json`
 
 Results are saved in `ban-inverse-bottop.json`, `ban-inverse-all.json`, and `ban-inverse-all-ordered-replay.json`. All processes completed. Next: find a smaller compatible parameterization and validate against withheld move values, keeping interpolation distinct from generalization.
 
@@ -148,8 +148,8 @@ These results show that exact fitting and local L1 refinement of the flexible in
 
 Reproduction:
 
-- `PYTHONPATH=. python3 scripts/tgv_ban_inverse.py --cross all --polish --polish-from data/tgv/20260916/ban-inverse-all.json`
-- `PYTHONPATH=. python3 scripts/tgv_ban_inverse.py --cross all --starts 32 --seed 2516 --holdout 17:81,17:523 --polish --initial-from data/tgv/20260916/ban-training-only-initializer.json`
+- `PYTHONPATH=. python3 research/tgv_ban_inverse.py --cross all --polish --polish-from data/tgv/20260916/ban-inverse-all.json`
+- `PYTHONPATH=. python3 research/tgv_ban_inverse.py --cross all --starts 32 --seed 2516 --holdout 17:81,17:523 --polish --initial-from data/tgv/20260916/ban-training-only-initializer.json`
 
 The training-only initializer and its provenance are saved. Both fits passed the separate ordered replay check. Next: test a low-rank opposing-team interaction motivated by damage balance multiplied by opposing tankiness; keep that structural hypothesis distinct from verified source coefficients.
 
@@ -169,10 +169,10 @@ A separate rank-one fit used an initializer that excluded the two withheld actio
 
 Reproduction:
 
-- `PYTHONPATH=. python3 scripts/tgv_ban_inverse.py --cross all --export-design`
-- `python3 scripts/tgv_lowrank_inverse.py --rank 1 --starts 12 --initial-from data/tgv/20260916/ban-inverse-all-polished.json`
-- `python3 scripts/tgv_lowrank_inverse.py --rank 1 --starts 33 --refine-from data/tgv/20260916/lowrank-inverse-rank1.json`
-- `python3 scripts/tgv_lowrank_inverse.py --rank 1 --starts 12 --holdout 17:81,17:523 --initial-from data/tgv/20260916/ban-inverse-all-holdout17_81-17_523-polished-seed2516.json`
+- `PYTHONPATH=. python3 research/tgv_ban_inverse.py --cross all --export-design`
+- `python3 research/tgv_lowrank_inverse.py --rank 1 --starts 12 --initial-from data/tgv/20260916/ban-inverse-all-polished.json`
+- `python3 research/tgv_lowrank_inverse.py --rank 1 --starts 33 --refine-from data/tgv/20260916/lowrank-inverse-rank1.json`
+- `python3 research/tgv_lowrank_inverse.py --rank 1 --starts 12 --holdout 17:81,17:523 --initial-from data/tgv/20260916/ban-inverse-all-holdout17_81-17_523-polished-seed2516.json`
 
 Analytic derivatives were checked by centered finite differences, with maximum error below 3e-11 at generic points away from strategy ties. No network access was used.
 
@@ -201,7 +201,7 @@ The compact model was independently fitted with action-17 Ezreal and Aphelios ex
 
 Maximum withheld error improves from approximately 0.145 in the flexible rank-one/table models to 0.03653 here. This is still not exact recovery. These two values have been reused for exploratory model comparisons, so a fresh validation split is required before treating this improvement as general predictive evidence. The earlier smaller-subgame minimum-L1 experiment reached 0.02590 on the same two values; the current result is not claimed to dominate every earlier experiment.
 
-Reproduction uses `scripts/tgv_lowrank_inverse.py` with `--factor-structure both --base-structure additive`. The exact fit and withheld fit use `--refine-from`, `--jump-all --jump-size .15 --starts 61`. Saved outputs have the suffix `refined-both-additivebase-alljumps`; the withheld version additionally includes `holdout17_81-17_523`. Both passed independent ordered replay over 33,004 states.
+Reproduction uses `research/tgv_lowrank_inverse.py` with `--factor-structure both --base-structure additive`. The exact fit and withheld fit use `--refine-from`, `--jump-all --jump-size .15 --starts 61`. Saved outputs have the suffix `refined-both-additivebase-alljumps`; the withheld version additionally includes `holdout17_81-17_523`. Both passed independent ordered replay over 33,004 states.
 
 ## Fresh validation and local identification
 
@@ -218,15 +218,15 @@ Independent ordered replay agrees exactly over 33,004 states. This failure is th
 
 At the earlier exact 40-observation compact fit, the Jacobian of the selected terminal scores has rank 22 (threshold 1e-9). The model has 30 stored parameters and 26 effective degrees of freedom after four gauge freedoms. Thus at least four nongauge directions are unidentified to first order in this selected-strategy region. This is a local differential result, not by itself a proof of global nonuniqueness. Ties and strategy changes can affect identification. Singular values and caveats are saved in `compact-local-identifiability.json`.
 
-Reproduce the fresh fit with `python3 scripts/tgv_lowrank_inverse.py --rank 1 --starts 16 --factor-structure both --base-structure additive --holdout 14:1,14:34,15:67,16:82 --seed 4811`. The result is saved as `lowrank-inverse-rank1-holdout14_1-14_34-15_67-16_82-both-additivebase.json`. The compact reconstruction remains a compatible local surrogate, not a recovered original composition model.
+Reproduce the fresh fit with `python3 research/tgv_lowrank_inverse.py --rank 1 --starts 16 --factor-structure both --base-structure additive --holdout 14:1,14:34,15:67,16:82 --seed 4811`. The result is saved as `lowrank-inverse-rank1-holdout14_1-14_34-15_67-16_82-both-additivebase.json`. The compact reconstruction remains a compatible local surrogate, not a recovered original composition model.
 
 ## Earlier bans add 22 observations and contested picks
 
 Extended the inverse problem to actions 12–19, preserving the fixed earlier picks. This restores Ashe to Blue's bot pool and Viktor to both Blue's mid and Red's bot pools. There are 625 Cartesian role combinations, of which 25 illegally pick Viktor on both teams. The resulting domain has **600 legal completed drafts and 62 observed move values**.
 
-`scripts/tgv_earlier_design.py` constructs the ordered draft graph using global champion availability. A Viktor ban removes him from both pools; a pick by either team makes him unavailable to the other. All 600 leaves have exactly one legal role assignment per side. The graph contains 41,955 distinct min/max nodes, representing 1,295,977 cached ordered states. The legal choices at each observed prefix exactly match the saved challenge's choices. The 320 previously studied leaves retain their known-factor scores to numerical precision, and the expanded graph reproduces all 40 previous predictions exactly when restricted to their canonical prefixes.
+`research/tgv_earlier_design.py` constructs the ordered draft graph using global champion availability. A Viktor ban removes him from both pools; a pick by either team makes him unavailable to the other. All 600 leaves have exactly one legal role assignment per side. The graph contains 41,955 distinct min/max nodes, representing 1,295,977 cached ordered states. The legal choices at each observed prefix exactly match the saved challenge's choices. The 320 previously studied leaves retain their known-factor scores to numerical precision, and the expanded graph reproduces all 40 previous predictions exactly when restricted to their canonical prefixes.
 
-The graph and known-factor vectors are saved in `earlier-design-graph.json` and `earlier-design.npz`. `scripts/tgv_minimax_graph.py` evaluates the DAG in depth batches; independent serial evaluation agrees exactly on both random and tied terminal values. This speeds up inverse fitting without changing the min/max values. At ties, any returned active leaf has the exact extremal value.
+The graph and known-factor vectors are saved in `earlier-design-graph.json` and `earlier-design.npz`. `research/tgv_minimax_graph.py` evaluates the DAG in depth batches; independent serial evaluation agrees exactly on both random and tied terminal values. This speeds up inverse fitting without changing the min/max values. At ties, any returned active leaf has the exact extremal value.
 
 ### Expanded structural fits
 
@@ -243,10 +243,10 @@ Neither optimization is globally certified. The best two-product fit still selec
 
 Reproduction:
 
-- `PYTHONPATH=. python3 scripts/tgv_earlier_design.py`
-- `python3 scripts/tgv_lowrank_inverse.py --design-prefix earlier --rank 1 --starts 16 --factor-structure both --base-structure additive --seed 5811`
-- `python3 scripts/tgv_lowrank_inverse.py --design-prefix earlier --rank 1 --starts 73 --factor-structure both --base-structure additive --refine-from data/tgv/20260916/lowrank-inverse-rank1-earlier-both-additivebase.json --jump-all --jump-size .15`
-- `python3 scripts/tgv_lowrank_inverse.py --design-prefix earlier --rank 2 --starts 109 --factor-structure both --base-structure additive --refine-from data/tgv/20260916/earlier-rank2-initializer.json --jump-all --jump-size .15`
+- `PYTHONPATH=. python3 research/tgv_earlier_design.py`
+- `python3 research/tgv_lowrank_inverse.py --design-prefix earlier --rank 1 --starts 16 --factor-structure both --base-structure additive --seed 5811`
+- `python3 research/tgv_lowrank_inverse.py --design-prefix earlier --rank 1 --starts 73 --factor-structure both --base-structure additive --refine-from data/tgv/20260916/lowrank-inverse-rank1-earlier-both-additivebase.json --jump-all --jump-size .15`
+- `python3 research/tgv_lowrank_inverse.py --design-prefix earlier --rank 2 --starts 109 --factor-structure both --base-structure additive --refine-from data/tgv/20260916/earlier-rank2-initializer.json --jump-all --jump-size .15`
 
 The expanded constraints supersede treating an exact fit to the smaller 40-value subgame as sufficient evidence. The unresolved objective is still the actual composition function, including its behavior beyond these observed subgames.
 
@@ -264,13 +264,13 @@ An explicit construction uses adjacent anchor values a<b:
 
 The derivative inside the interval is at least `1-0.2*pi = 0.37168`, so h is strictly increasing. This statement applies to any exact compatible terminal table, including the unknown true one, provided it contains terminal values inside the chosen interval. It does not require finding that table first.
 
-For a numerical witness, `scripts/tgv_monotone_witness.py` additionally anchors every prediction of the current approximate two-product fit. It chooses the nonempty gap from 0.2439783514 to 0.5949484110. The transformation changes **153 of 600 terminal scores**, by up to **0.07019108 logits**, while preserving all 62 graph predictions exactly. The original and transformed maximum observation residuals are both 0.00159549; the transformation does not repair the approximate fit. Separate ordered replay of the transformed table agrees over 1,295,977 states.
+For a numerical witness, `research/tgv_monotone_witness.py` additionally anchors every prediction of the current approximate two-product fit. It chooses the nonempty gap from 0.2439783514 to 0.5949484110. The transformation changes **153 of 600 terminal scores**, by up to **0.07019108 logits**, while preserving all 62 graph predictions exactly. The original and transformed maximum observation residuals are both 0.00159549; the transformation does not repair the approximate fit. Separate ordered replay of the transformed table agrees over 1,295,977 states.
 
 Known unary, comfort, matchup, synergy, and side contributions K are retained: the alternative composition table is `C'=h(K+C)-K`. This is a statement about unrestricted composition tables on the fixed-roster subgame. The transformed C' is not established to belong to TGV's physical channel family or even the fitted bilinear family. The theorem also does not automatically apply to mixed role-assignment equilibria, which can involve averages rather than pure extrema; every terminal in this subgame has unique role assignments.
 
 Consequently, recovering the original unobserved terminal scores requires independently justified restrictions on the composition function. Exact interpolation of these min/max observations alone cannot identify an arbitrary composition table. This explains why increasing fit accuracy is necessary for a compatible reconstruction but insufficient to establish the true model.
 
-Reproduce with `python3 scripts/tgv_monotone_witness.py data/tgv/20260916/lowrank-inverse-rank2-earlier-refined-both-additivebase-alljumps.json`. The saved output has suffix `-monotone-witness.json` and contains the transformed terminal table, unchanged observations, formula, and limitations.
+Reproduce with `python3 research/tgv_monotone_witness.py data/tgv/20260916/lowrank-inverse-rank2-earlier-refined-both-additivebase-alljumps.json`. The saved output has suffix `-monotone-witness.json` and contains the transformed terminal table, unchanged observations, formula, and limitations.
 
 ## Smooth optimization check
 
@@ -278,7 +278,7 @@ Tested whether replacing hard extrema temporarily with log-sum-exp extrema could
 
 Starting from the best expanded two-product fit, the best **hard-minimax** maximum residual encountered is **0.00136852 logits** at the 0.001-temperature stage. The final zero-temperature refinement returns to 0.00159539, so the saved fit retains the earlier, better hard-minimax result. The first three stages reached their 1,000-evaluation limits. Thus this experiment supplies neither convergence nor a global infeasibility certificate. Independent ordered replay of the retained table agrees exactly.
 
-Reproduction: `python3 scripts/tgv_lowrank_inverse.py --design-prefix earlier --rank 2 --starts 1 --factor-structure both --base-structure additive --refine-from data/tgv/20260916/lowrank-inverse-rank2-earlier-refined-both-additivebase-alljumps.json --temperatures .02,.005,.001,.0002,0`. The saved result has suffix `earlier-refined-both-additivebase-annealed.json` and records each stage's true hard-minimax error and evaluation count. This is a modest improvement in compatible approximation, not original-model recovery.
+Reproduction: `python3 research/tgv_lowrank_inverse.py --design-prefix earlier --rank 2 --starts 1 --factor-structure both --base-structure additive --refine-from data/tgv/20260916/lowrank-inverse-rank2-earlier-refined-both-additivebase-alljumps.json --temperatures .02,.005,.001,.0002,0`. The saved result has suffix `earlier-refined-both-additivebase-annealed.json` and records each stage's true hard-minimax error and evaluation count. This is a modest improvement in compatible approximation, not original-model recovery.
 
 ## Fitting the source-described nonlinear balance term
 
@@ -292,15 +292,15 @@ Re-read the saved current client `current-surface/DraftFeedback-BcwFAnDP.js`. It
 
 A combines the linear true-DPM, tankiness, gold-demand, and total-DPM terms. M and P are sums of positive champion contributions. If the tankiness normalization is affine, Q is also additive in champion contributions. The exact normalization remains unpublished; affine normalization is an explicit assumption of this fit.
 
-`scripts/tgv_balance_inverse.py` fits this form directly on the 600-draft domain. It absorbs the unknown center into a rescaling of the positive magic inputs and uses 80 stored parameters. Accordingly, fitted M and P are not claimed to be physical DPM. It also constrains the separately published Blue adjusted-balance effect, Red adjusted-balance effect, and combined linear composition effect from the canonical breakdown—three additional observations beyond the 62 move values.
+`research/tgv_balance_inverse.py` fits this form directly on the 600-draft domain. It absorbs the unknown center into a rescaling of the positive magic inputs and uses 80 stored parameters. Accordingly, fitted M and P are not claimed to be physical DPM. It also constrains the separately published Blue adjusted-balance effect, Red adjusted-balance effect, and combined linear composition effect from the canonical breakdown—three additional observations beyond the 62 move values.
 
 Sixteen random starts followed by 161 coordinate perturbations produce a maximum residual of **0.00107029 logits across all 65 fitted values**. Analytic derivatives agree with finite differences within 1.08e-10. Independent ordered replay agrees exactly over 1,295,977 states. The separate anchor errors are approximately +0.00001315 for Blue balance, -0.00003174 for Red balance, and +0.00001154 for the linear contribution. The fit is not exact, and no global optimality certificate is claimed. Engine rounding versus double-precision breakdown values also imposes a small numerical consistency limitation, much smaller than the remaining residual.
 
 Reproduction:
 
-- `python3 scripts/tgv_balance_inverse.py --starts 16`
-- `python3 scripts/tgv_balance_inverse.py --starts 161 --refine-from data/tgv/20260916/balance-inverse.json`
-- `python3 scripts/tgv_replay_bans.py data/tgv/20260916/balance-inverse-refined.json`
+- `python3 research/tgv_balance_inverse.py --starts 16`
+- `python3 research/tgv_balance_inverse.py --starts 161 --refine-from data/tgv/20260916/balance-inverse.json`
+- `python3 research/tgv_replay_bans.py data/tgv/20260916/balance-inverse-refined.json`
 
 This is the most directly source-motivated composition approximation tested here. It still does not identify the original physical channel inputs, training procedure, or arbitrary-draft predictions.
 
@@ -320,7 +320,7 @@ At most 35 directions correspond to per-role/per-patch constants that cancel in 
 
 This is an exact linear rank bound under the score-input assumptions, not an explicit perturbation vector: the unpublished historical draft identities prevent constructing the full matrix. Sufficiently small perturbations must also remain within any valid input domain. Undisclosed training equations, cross-cell constraints, or additional composition observations could reduce the admissible family. The argument preserves the named numerical observations, not the cryptographic identity of TGV's original factor file.
 
-Reproduce the counts with `python3 scripts/tgv_gold_identifiability.py`. The saved `gold-identifiability-bound.json` records the argument, conservative counts, scope, and assumptions.
+Reproduce the counts with `python3 research/tgv_gold_identifiability.py`. The saved `gold-identifiability-bound.json` records the argument, conservative counts, scope, and assumptions.
 
 ## Recovery status
 

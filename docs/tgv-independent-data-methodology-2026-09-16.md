@@ -32,7 +32,7 @@ The GPTilt professional archive also supplies entity-alias linkage and source UR
 
 Downloaded the public Challenger sample's participant and match tables and joined them on match ID. Five complete games yield **50 usable player rows**, covering **patches 15.7 and 15.8**. The partial sixth game is excluded. Both teams have five unique roles. Derived total-gold shares sum to one per team. The three damage-type totals differ from the API total by at most two raw damage units in this sample; the normalizer records this discrepancy and defines its total as the sum of those channels.
 
-The working normalizer is `scripts/tgv_external_sample.py`; output is `data/tgv/independent-sources/composition-sample.json`. It computes:
+The working normalizer is `research/tgv_external_sample.py`; output is `data/tgv/independent-sources/composition-sample.json`. It computes:
 
 - Physical/magic/true damage to champions divided by game minutes.
 - Total DPM as their sum.

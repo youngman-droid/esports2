@@ -144,7 +144,7 @@ score. The newer adaptive experiment already separates the shared prior fit
 from its calibration block and provides a useful implementation pattern.
 
 Relevant code: `lol_ticker/wpgam.py:585`, `lol_ticker/wpgam.py:657`,
-`scripts/wpx_adapt.py:125`. The requirement for disjoint model/calibration data
+`research/wpx_adapt.py:125`. The requirement for disjoint model/calibration data
 is also explained in the [scikit-learn calibration documentation](https://scikit-learn.org/stable/modules/calibration.html).
 
 ## 4. Improve live timing and accumulate usable evidence

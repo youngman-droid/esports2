@@ -16,8 +16,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lol_ticker import wpobjective, wptrend, wpresidual, wpgam, wpbench
-from scripts import wpx_combat as historical
-from scripts import wpx_methods_v9 as methods
+from research import wpx_combat as historical
+from research import wpx_methods_v9 as methods
 
 log = logging.getLogger("opportunities")
 SPEC = dict(l2=800., smooth=70.)

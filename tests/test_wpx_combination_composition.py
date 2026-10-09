@@ -9,7 +9,7 @@ import numpy as np
 from numpy.testing import assert_array_equal
 
 from lol_ticker import wpcomposition as composition
-from scripts import wpx_combination_composition as adapter
+from research import wpx_combination_composition as adapter
 
 
 class ArchiveCompositionTests(unittest.TestCase):

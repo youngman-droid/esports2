@@ -343,7 +343,7 @@ Two outcome-based models evaluate drafts and events without any market data
   replacing the incumbent. The recency retest did not improve the later replay;
   see [implementation and validation](docs/model-repairs-2026-09-04.md).
   The [alternative-method reevaluation](docs/alternative-methods-2026-09-04.md)
-  uses `scripts/wpx_methods_v9.py` to compare fourteen families and two
+  uses `research/wpx_methods_v9.py` to compare fourteen families and two
   ensembles with the repaired contract, separate calibration dates, frozen
   development choices and monthly replay. Earlier benchmark files retain their
   original evaluation protocol and should not be mixed with these scores.
@@ -485,7 +485,7 @@ the deployed forecast is unchanged. The October 4 historical screen selected
 the corrected-core baseline rather than either readiness residual. See the
 [implementation, limits and results](docs/combat-readiness-2026-10-04.md).
 Reproduce into a new directory with
-`python3 scripts/wpx_combat.py --out data/wpx/combat_reproduction`.
+`python3 research/wpx_combat.py --out data/wpx/combat_reproduction`.
 
 Objective opportunities, composition, Fearless context, prior confidence,
 recent trajectories and an early SQ signal now have isolated research adapters
@@ -769,7 +769,7 @@ GROUP BY minute ORDER BY minute;
 
 ### Major-league-only model comparisons
 
-`scripts/wpx_major.py` builds a season-aware cohort of direct Worlds-slot leagues
+`research/wpx_major.py` builds a season-aware cohort of direct Worlds-slot leagues
 and Worlds/MSI/First Stand, then runs all 14 repaired model families, both
 ensembles, the 180-day recency comparison, and the matched market diagnostics.
 It excludes academy/regional leagues, promotion events, and other cups. Historical
@@ -782,9 +782,9 @@ timelines are unavailable. The separate postdraft export below includes LPL.
 ```bash
 DYLD_LIBRARY_PATH=/Users/itch/Library/Python/3.9/lib/python/site-packages/sklearn/.dylibs \
 OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
-/tmp/esports2-methods-v9-env/bin/python scripts/wpx_major.py \
+/tmp/esports2-methods-v9-env/bin/python research/wpx_major.py \
   --source-cache data/wpx/adapt_cache/408b0e7b37ff020354920067
-python3 scripts/wpx_major_report.py
+python3 research/wpx_major_report.py
 ```
 
 Use `--prepare-only` to inspect `data/wpx/major_v9/cohort.json` before fitting.
@@ -814,8 +814,8 @@ from its archived source and inputs, verified against all 99,408 saved held-out
 predictions. Run the recovery first, then the replay:
 
 ```bash
-OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 python3 scripts/wpx_recover_v8.py
-OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 python3 scripts/wpx_postdraft_bets.py
+OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 python3 research/wpx_recover_v8.py
+OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 python3 research/wpx_postdraft_bets.py
 ```
 
 Artifacts are isolated under `data/wpx/postdraft_lpl_2026-09-12`; the replay

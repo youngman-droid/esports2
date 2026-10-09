@@ -6,7 +6,7 @@ into their evaluation. These are reconstruction diagnostics, not outcome tests.
 import json
 from pathlib import Path
 import numpy as np
-from lol_ticker.tgv_reconstruction import PublicDraftModel,ROLES
+from research.tgv_reconstruction import PublicDraftModel,ROLES
 
 
 def metrics(target,pred):

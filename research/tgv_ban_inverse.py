@@ -8,7 +8,7 @@ import itertools,json,time,argparse
 from pathlib import Path
 import numpy as np
 from scipy.optimize import least_squares,linprog
-from lol_ticker.tgv_reconstruction import PublicDraftModel
+from research.tgv_reconstruction import PublicDraftModel
 
 
 def main():

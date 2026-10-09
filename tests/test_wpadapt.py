@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 
 from lol_ticker import wpadapt as wa
-from scripts.wpx_adapt import search_specs
+from research.wpx_adapt import search_specs
 
 
 class TemporalTests(unittest.TestCase):

@@ -145,7 +145,7 @@ def main():
         for r in sorted((r for r in primary if r['role']==role),key=lambda r:r['champion']):
             patch_term='yes' if r['own_patch_adjustment_present'] or r['enemy_patch_adjustment_present'] else 'fallback'
             report.append(f"| {role} | {r['champion']} | {r['ours_centered']:+.4f} | {r['tgv_centered']:+.4f} | {r['ours_rank']} | {r['tgv_rank']} | {r['training_role_appearances_lower_bound']} | {patch_term} |")
-    report.extend(["", "## Reproduction", "", "`PYTHONPATH=. python3 scripts/tgv_compare_champion_weights.py`", "",
+    report.extend(["", "## Reproduction", "", "`PYTHONPATH=. python3 research/tgv_compare_champion_weights.py`", "",
                    f"Coefficient extraction was independently checked against the actual draft feature generator on 100 complete drafts; maximum difference {verification_error:.3g}. The database was read only. No model was refitted or deployed.", "",
                    "The source snapshot and complete unrounded rows for all seven patches are in `data/tgv/champ-weight-comparison/production-outcome-snapshot.json` and `comparison.json`. The latter also retains raw coefficients from the previously isolated draft-plus-comfort experiment as a separately labeled secondary column; that experiment is frozen before January 16, 2026."])
     Path('docs/tgv-champion-weight-comparison-2026-09-16.md').write_text('\n'.join(report)+'\n')

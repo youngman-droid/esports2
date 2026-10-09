@@ -11,7 +11,7 @@ import numpy as np
 from scipy.linalg import svdvals
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from lol_ticker.tgv_reconstruction import (PublicDraftModel, ROLES, recover_two_point_curve,
+from research.tgv_reconstruction import (PublicDraftModel, ROLES, recover_two_point_curve,
                                           saturating_count, verify_daily)
 
 

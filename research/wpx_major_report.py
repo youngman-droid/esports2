@@ -7,7 +7,7 @@ import sys
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from lol_ticker import wpbench
-from scripts.wpx_methods_v9 import dump, metrics, paired, specifications
+from research.wpx_methods_v9 import dump, metrics, paired, specifications
 
 
 def main(root, original, report):

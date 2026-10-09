@@ -218,7 +218,7 @@ The difference is not explained solely by rare picks or the chosen patch. Howeve
 
 ## Reproduction
 
-`PYTHONPATH=. python3 scripts/tgv_compare_champion_weights.py`
+`PYTHONPATH=. python3 research/tgv_compare_champion_weights.py`
 
 Coefficient extraction was independently checked against the actual draft feature generator on 100 complete drafts; maximum difference 8.33e-17. The database was read only. No model was refitted or deployed.
 

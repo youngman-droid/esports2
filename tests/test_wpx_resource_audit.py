@@ -4,7 +4,7 @@ import unittest
 import numpy as np
 
 from lol_ticker import wpgam, wpx
-from scripts import wpx_resource_audit as audit
+from research import wpx_resource_audit as audit
 
 
 class ResourceSupplementaryAuditTests(unittest.TestCase):

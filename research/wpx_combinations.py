@@ -19,7 +19,7 @@ import scipy
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lol_ticker import wpbench, wpgam, wpcombat, wpobjective, wptrend, wpcomposition, wpsqearly
-from scripts import wpx_combat, wpx_methods_v9 as methods
+from research import wpx_combat, wpx_methods_v9 as methods
 
 log = logging.getLogger("combinations")
 FAMILIES = ("combat", "objective", "trend", "composition", "sq")
@@ -148,7 +148,7 @@ def slices(p, ref, rows, mask, features, series):
 
 def stage(output, month, rows, features, specs, gold, series, cache, original, *, resume=False):
     from lol_ticker import wpcombined
-    from scripts.wpx_combination_audit import audit
+    from research.wpx_combination_audit import audit
     label = "replay_"+month
     directory = output/label
     directory.mkdir(exist_ok=resume)
@@ -244,8 +244,8 @@ def main(dataset, cache, output, resume=False):
                        "evaluation_registry.json", "historical_evaluation_registry.json")]
     protected = {str(p): sha(p) for p in protected_paths}
     source_paths = [Path(__file__), Path(wpcombined.__file__), Path(wpx_combat.__file__), Path(methods.__file__),
-                    Path(wpgam.__file__), Path(wpbench.__file__), Path("scripts/wpx_combination_audit.py"),
-                    Path("scripts/wpx_combination_composition.py")]
+                    Path(wpgam.__file__), Path(wpbench.__file__), Path("research/wpx_combination_audit.py"),
+                    Path("research/wpx_combination_composition.py")]
     source.update({str(p): sha(p) for p in source_paths})
     plan = dict(kind="joint_research_family_factorial_v1", families=list(FAMILIES),
         combinations=[list(s) for s in combinations()], specs=specs,

@@ -6,12 +6,12 @@ Follows [the TGV head-to-head](tgv-head-to-head-2026-09-17.md), which left TGV's
 
 ## Data and score
 
-- Source: Lolalytics public JSON (emerald+, all regions, ~25–29M games/patch), patches 16.8–16.17, the 291 champion/role combos with ≥3 pro picks; 12,356 of 12,360 pages fetched at ~1 req/s, no blocks (`scripts/sq_pairs_scrape.py`, `data/sq/lolalytics/`). robots.txt permits; u.gg was bot-walled and left alone.
+- Source: Lolalytics public JSON (emerald+, all regions, ~25–29M games/patch), patches 16.8–16.17, the 291 champion/role combos with ≥3 pro picks; 12,356 of 12,360 pages fetched at ~1 req/s, no blocks (`research/sq_pairs_scrape.py`, `data/sq/lolalytics/`). robots.txt permits; u.gg was bot-walled and left alone.
 - Effect per pair = 0.04 × Lolalytics `d2` (verified: pair win rate in pp beyond both champions' baselines, `vsWr − (100 − wr_b) − (wr_a − 50) − (avgWr − 50)`; 0.04 converts pp → logit). All 25 lane-vs-lane matchups and 10 same-team synergies per side.
 - Shrinkage n/(n+k), k = 4/τ² with τ² by method of moments on solo-queue data alone: τ ≈ 0.050 (matchups, k ≈ 1,570 games), τ ≈ 0.029 (synergies, k ≈ 4,800). No pro data touches the score.
 - Draft score = Σ matchups + Σ blue synergies − Σ red synergies. 99.4% pair coverage; sd 0.26 logit; correlation with our own `syn:`/`vs:` terms 0.13.
 
-## Results (`scripts/sq_pairs_eval.py`, `data/sq/eval/report.json`)
+## Results (`research/sq_pairs_eval.py`, `data/sq/eval/report.json`)
 
 Ours and controls refit walk-forward at half-month cutoffs from 2026-05-01; cluster bootstrap over team-pair/date.
 
@@ -35,7 +35,7 @@ TGV's pair-table edge was probably real and this recovers the clean part of it w
 
 **1. `draft.fit_outcome_model` — SHIPPED (`draft.SQ_PAIR_ENABLED = True`).** Production code is `lol_ticker/sqpairs.py` (scrape/refresh, compact `data/sq/pair_tables.npz`, `Scorer` using prior patches only; agrees with the research script to 1.4e-4). The score enters as one extra column `__sq_pair__` = score / 0.25 (≈ its sd, so λ=300 means the same as for the 0/1 indicators), ridge-penalised with everything else, stored in `draft_outcome_model` and the fit meta; unavailable score = 0. The draft edge fed to wpx (`draft_outcome_oos`) now includes it. New kwargs `holdout_since` / `write=False` make the production trainer gateable.
 
-Newest-date gate (`scripts/sq_pair_gate.py`, production trainer, cluster bootstrap):
+Newest-date gate (`research/sq_pair_gate.py`, production trainer, cluster bootstrap):
 
 | Train before | Holdout maps | Learned slope on raw score | Log loss without → with | Paired Δ log loss | Paired Δ Brier |
 |---|---:|---:|---|---:|---:|
@@ -44,7 +44,7 @@ Newest-date gate (`scripts/sq_pair_gate.py`, production trainer, cluster bootstr
 
 Both intervals exclude zero. For scale, the whole draft vocabulary is worth −0.0027 over Elo-only on the first holdout, so this one input doubles the draft model's edge. The slope is learned from only ~2,000–2,900 covered training maps and will firm up (toward ~0.6) as coverage accumulates.
 
-**2. Live GAM pregame prior — survives, NOT absorbed, but under the bar to roll the contract** (`scripts/sq_pair_live_check.py`: production `wpgam.fit_arrays` with temporal calibration on 14,390 gol.gg games before 2026-08-01; 1,145 covered newer games, major regions).
+**2. Live GAM pregame prior — survives, NOT absorbed, but under the bar to roll the contract** (`research/sq_pair_live_check.py`: production `wpgam.fit_arrays` with temporal calibration on 14,390 gol.gg games before 2026-08-01; 1,145 covered newer games, major regions).
 
 - On top of the GAM pregame prior (team + champion logits): slope learned forward on out-of-fold training logits = 0.56; in-block 0.50 [0.09, 0.97], z = 2.1. Correlation with `prior_champ_logit` only 0.17 — the GAM's champion terms are not already carrying it. Forward gain −0.0020 log loss, CI [−0.0060, +0.0023]: right size, not significant on 1,145 major-region games (the slice where the signal was always weaker).
 - On top of the full in-game GAM logit the signal decays with game time and is gone by ~15–20 min:
@@ -67,6 +67,6 @@ Tests: `tests/test_sqpairs.py` (prior-patch-only pooling, side-swap antisymmetry
 
 ```sh
 python3 -m lol_ticker sqpairs refresh
-PYTHONPATH=. python3 scripts/sq_pair_gate.py
-OPENBLAS_NUM_THREADS=4 PYTHONPATH=. python3 scripts/sq_pair_live_check.py   # ~10 min
+PYTHONPATH=. python3 research/sq_pair_gate.py
+OPENBLAS_NUM_THREADS=4 PYTHONPATH=. python3 research/sq_pair_live_check.py   # ~10 min
 ```

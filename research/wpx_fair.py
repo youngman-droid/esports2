@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import numpy as np
-from . import align, config
+from lol_ticker import align, config
 
 log = logging.getLogger("wpx_fair")
 OUT_DIR = os.path.join(config.REPO_ROOT, "data", "wpx")

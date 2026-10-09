@@ -13,7 +13,7 @@ import numpy as np
 from scipy.linalg import lstsq
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from lol_ticker.tgv_reconstruction import recover_two_point_curve
+from research.tgv_reconstruction import recover_two_point_curve
 
 
 def recover(root):

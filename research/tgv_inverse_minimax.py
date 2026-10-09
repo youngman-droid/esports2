@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from scipy.optimize import milp,Bounds,LinearConstraint
 from scipy.sparse import coo_matrix
-from lol_ticker.tgv_reconstruction import PublicDraftModel
+from research.tgv_reconstruction import PublicDraftModel
 
 
 def main():

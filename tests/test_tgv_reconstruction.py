@@ -2,7 +2,7 @@ import math
 from pathlib import Path
 import unittest
 
-from lol_ticker.tgv_reconstruction import (PublicDraftModel, sigmoid, verify_daily,
+from research.tgv_reconstruction import (PublicDraftModel, sigmoid, verify_daily,
     recover_two_point_curve, saturating_count)
 
 ROOT=Path(__file__).resolve().parents[1]/'data/tgv/20260916'

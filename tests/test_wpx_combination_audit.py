@@ -5,7 +5,7 @@ from unittest.mock import patch
 import numpy as np
 
 from lol_ticker import wpcombat, wpcombined, wpgam, wptrend
-from scripts import wpx_combination_audit as shape
+from research import wpx_combination_audit as shape
 
 
 class CombinationShapeTests(unittest.TestCase):

@@ -40,7 +40,7 @@ challenger are staged experimental artifacts; the deployed v8 model is retained.
    source revision stays fixed until restart. Optional blend failures cannot
    prevent the independent model from recording.
 
-5. **Retest 180-day decay.** `scripts/wpx_recency.py` compares only the repaired
+5. **Retest 180-day decay.** `research/wpx_recency.py` compares only the repaired
    expanding-history GAM and its 180-day state-weight-decay challenger. Three
    development blocks select calibration and the candidate. A later frozen
    diagnostic and five monthly replay periods use those frozen choices, with
@@ -127,7 +127,7 @@ predictions, full comparison intervals, input audits and source snapshots.
 
 ```bash
 python3 -m unittest discover -s tests
-python3 scripts/wpx_recency.py \
+python3 research/wpx_recency.py \
   --output data/wpx/repairs_v9_rerun \
   --resource-cache data/wpx/adapt_cache/408b0e7b37ff020354920067 \
   --incumbent-source data/wpx/repairs_v9/incumbent_source.py

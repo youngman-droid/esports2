@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from scripts import wpx_combinations as runner
+from research import wpx_combinations as runner
 
 
 class CombinationRunnerTests(unittest.TestCase):

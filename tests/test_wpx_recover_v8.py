@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from scripts import wpx_recover_v8 as recovery
+from research import wpx_recover_v8 as recovery
 
 
 class ExactRecoveryGuardsTests(unittest.TestCase):

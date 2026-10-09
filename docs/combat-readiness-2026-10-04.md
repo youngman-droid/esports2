@@ -32,7 +32,7 @@ upstream feed delay; the recorder retains its separate timing measurements.
 
 ## Historical experiment
 
-`scripts/wpx_combat.py` uses the immutable corrected archive through September
+`research/wpx_combat.py` uses the immutable corrected archive through September
 2, 2026: 15,408 already-consumed games and 500,122 fixed-minute states. It joins
 raw telemetry by the archive's accepted `(game_id, hp_observation_ts)`, checks
 HP/death agreement, and independently revalidates cumulative-player-gold
@@ -100,7 +100,7 @@ initial/incomplete runs remain separate and are not the completed result.
 
 ```sh
 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
-  python3 scripts/wpx_combat.py --out data/wpx/combat_reproduction
+  python3 research/wpx_combat.py --out data/wpx/combat_reproduction
 python3 -m unittest tests.test_wpcombat tests.test_live_combat tests.test_wpx_combat
 ```
 

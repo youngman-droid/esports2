@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-from scripts import wpx_postdraft_bets as replay
+from research import wpx_postdraft_bets as replay
 
 
 def market_pair(platform='kalshi', start=None):

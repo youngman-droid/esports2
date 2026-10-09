@@ -18,8 +18,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lol_ticker import wpbench, wpgam
-from scripts.wpx_adapt import load_extra
-from scripts.wpx_methods_v9 import dump
+from research.wpx_adapt import load_extra
+from research.wpx_methods_v9 import dump
 
 
 def competition_group(name):

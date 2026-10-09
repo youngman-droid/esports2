@@ -9,7 +9,7 @@ block on the existing live feature contract.
 
 ## Comparison
 
-`scripts/wpx_lightgbm.py` uses LightGBM 4.6.0 and reuses `wpbench`'s chronological
+`research/wpx_lightgbm.py` uses LightGBM 4.6.0 and reuses `wpbench`'s chronological
 split: 9,845 inner-training games, 2,466 validation games, and 3,097 later games
 starting 2026-05-01. The later block contains 99,408 fixed-minute states. Each
 game receives equal total weight. All models share the same stacked priors,
@@ -67,13 +67,13 @@ virtual environment, leaving project runtime dependencies unchanged.
 
 ## Artifacts
 
-- `scripts/wpx_lightgbm.py`: reproducible adapter; optional dependency
+- `research/wpx_lightgbm.py`: reproducible adapter; optional dependency
   `lightgbm==4.6.0` and an available OpenMP runtime on macOS.
 - `data/wpx/lightgbm_benchmark.json`: full metrics, selected settings, version,
   dataset SHA-256, calibration and blend weights.
 - `data/wpx/lightgbm_benchmark.npz`: later-block predictions and labels.
 
-Run `python scripts/wpx_lightgbm.py` in an environment with LightGBM available.
+Run `python research/wpx_lightgbm.py` in an environment with LightGBM available.
 The macOS run used the existing sklearn-bundled `libomp.dylib` through
 `DYLD_LIBRARY_PATH`. The benchmark completed, predictions passed finite/range
 checks, and the adapter passed Python compilation and whitespace checks.

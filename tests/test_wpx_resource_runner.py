@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from scripts import wpx_resource as runner
+from research import wpx_resource as runner
 
 
 class ResourceStudyProtocolTests(unittest.TestCase):

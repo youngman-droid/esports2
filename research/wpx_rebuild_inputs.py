@@ -1,6 +1,6 @@
 """Rebuild consumed historical inputs into an immutable, versioned artifact.
 
-Example: python3 scripts/wpx_rebuild_inputs.py --before 2026-09-03 \
+Example: python3 research/wpx_rebuild_inputs.py --before 2026-09-03 \
     --out data/wpx/states_inputs_v2_before_2026-09-03.npz
 """
 import argparse

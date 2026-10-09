@@ -1,6 +1,6 @@
 """Test a solo-queue-derived matchup/synergy score as ONE input to our draft model.
 
-Pair effects come only from Lolalytics solo-queue counts (scripts/sq_pairs_scrape.py),
+Pair effects come only from Lolalytics solo-queue counts (research/sq_pairs_scrape.py),
 so no professional outcome enters them: every covered pro map is a clean test.
   effect = 0.04 * d2, where Lolalytics' d2 is the pair win rate in pp beyond both
   champions' own baselines (verified: d2 = vsWr-(100-wr_b)-(wr_a-50)-(avgWr-50)); 0.04 = pp -> logit

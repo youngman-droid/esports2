@@ -14,7 +14,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lol_ticker import wpgam, wpobjective, wptrend, wpresidual, wpbench
-from scripts import wpx_combat as historical
+from research import wpx_combat as historical
 
 
 def sha(path):

@@ -5,7 +5,7 @@ mid effects and column maxima are then held-out checks, without optimization.
 """
 import json,itertools
 from pathlib import Path
-from lol_ticker.tgv_reconstruction import PublicDraftModel
+from research.tgv_reconstruction import PublicDraftModel
 
 
 def main():

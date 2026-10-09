@@ -21,7 +21,7 @@ from psycopg.rows import dict_row
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from lol_ticker import config, draft, wppostdraft
-from scripts.wpx_major import competition_group
+from research.wpx_major import competition_group
 
 PM_FEE_CHANGE = int(datetime(2026, 7, 10, tzinfo=timezone.utc).timestamp())
 KS_PRECISION_CHANGE = int(datetime(2026, 5, 28, tzinfo=timezone.utc).timestamp())

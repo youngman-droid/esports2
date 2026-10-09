@@ -22,8 +22,8 @@ Reproduction commands, using a new output path because rebuilds refuse to overwr
 
 ```sh
 python3 scripts/feed_backfill.py --recover-origins --before 2026-09-03 --workers 8
-python3 scripts/wpx_rebuild_inputs.py --before 2026-09-03 --out data/wpx/NEW_VERSION.npz
-python3 scripts/wpx_rebuild_inputs.py --before 2026-09-03 --out data/wpx/NEW_VERSION.npz --audit-only --verify-source
+python3 research/wpx_rebuild_inputs.py --before 2026-09-03 --out data/wpx/NEW_VERSION.npz
+python3 research/wpx_rebuild_inputs.py --before 2026-09-03 --out data/wpx/NEW_VERSION.npz --audit-only --verify-source
 python3 -m unittest discover -s tests -p 'test_wpx_inputs.py' -v
 python3 -m unittest discover -s tests -p 'test_wpgam.py' -v
 ```

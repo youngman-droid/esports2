@@ -17,7 +17,7 @@ import scipy
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lol_ticker import sqpairs, wpsqearly, wpgam, wpbench
-from scripts import wpx_combat, wpx_methods_v9 as methods
+from research import wpx_combat, wpx_methods_v9 as methods
 
 log = logging.getLogger("sq_early")
 

@@ -17,7 +17,7 @@ from psycopg.rows import dict_row
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from lol_ticker import align,config,shadow,wpgam
-from scripts.wpx_methods_v9 import dump,metrics,paired
+from research.wpx_methods_v9 import dump,metrics,paired
 
 log=logging.getLogger('market_v9')
 LEADS=(0,45,195)

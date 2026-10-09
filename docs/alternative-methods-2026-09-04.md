@@ -153,14 +153,14 @@ unconstrained, consistent with the [LightGBM parameter documentation](https://li
 
 ## Reproduction and provenance
 
-The isolated runner is `scripts/wpx_methods_v9.py`. Optional dependencies are
+The isolated runner is `research/wpx_methods_v9.py`. Optional dependencies are
 LightGBM 4.6.0 and the existing project Python libraries. On this Mac it runs in
 `/tmp/esports2-methods-v9-env`, with the existing sklearn OpenMP runtime:
 
 ```bash
 DYLD_LIBRARY_PATH=/Users/itch/Library/Python/3.9/lib/python/site-packages/sklearn/.dylibs \
 OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
-/tmp/esports2-methods-v9-env/bin/python scripts/wpx_methods_v9.py \
+/tmp/esports2-methods-v9-env/bin/python research/wpx_methods_v9.py \
   --output data/wpx/methods_v9_rerun \
   --resource-cache data/wpx/adapt_cache/408b0e7b37ff020354920067
 python3 -m unittest discover -s tests

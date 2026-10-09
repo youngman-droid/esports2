@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from scripts.wpx_market_v9 import past_prices
+from research.wpx_market_v9 import past_prices
 
 
 class HistoricalPriceTests(unittest.TestCase):

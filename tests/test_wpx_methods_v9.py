@@ -5,7 +5,7 @@ from unittest import mock
 import numpy as np
 
 from lol_ticker import wpbench, wpgam, wpadapt as wa
-from scripts import wpx_altmodels as alt, wpx_methods_v9 as methods
+from research import wpx_altmodels as alt, wpx_methods_v9 as methods
 
 
 class RepairedMethodTests(unittest.TestCase):

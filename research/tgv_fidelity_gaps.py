@@ -13,7 +13,7 @@ import unicodedata
 
 import numpy as np
 
-from lol_ticker.tgv_reconstruction import PublicDraftModel
+from research.tgv_reconstruction import PublicDraftModel
 
 ROOT = Path('data/tgv/20260916')
 OE2TGV = dict(top='top', jng='jungle', mid='middle', bot='bottom', sup='support')

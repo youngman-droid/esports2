@@ -100,8 +100,8 @@ and [trading fees](https://docs.polymarket.com/trading/fees).
 ## Reproduction and artifacts
 
 ```bash
-OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 python3 scripts/wpx_recover_v8.py
-OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 python3 scripts/wpx_postdraft_bets.py
+OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 python3 research/wpx_recover_v8.py
+OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 python3 research/wpx_postdraft_bets.py
 python3 -m unittest tests.test_wppostdraft tests.test_wpx_recover_v8 \
   tests.test_wpx_postdraft_bets tests.test_update_pipeline tests.test_wpx_major
 ```

@@ -18,8 +18,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from lol_ticker import wpbench, wpgam
-from scripts import wpx_resource as runner
-from scripts.wpx_major import competition_group
+from research import wpx_resource as runner
+from research.wpx_major import competition_group
 
 
 def require(condition, message):

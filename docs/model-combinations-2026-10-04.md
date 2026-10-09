@@ -72,6 +72,6 @@ All 375 repository tests pass (one existing database test skipped). The fitted c
 
 The run binds datasets, resource/feature caches, chronological baseline hashes, source snapshots, models and predictions. A supplemental dependency audit verifies imported residual helpers and feature modules against hash-bound source snapshots completed before fitting. No outcomes after September 2 were opened.
 
-[Full machine-readable report](../data/wpx/combinations_2026-10-04/report.json), [selection](../data/wpx/combinations_2026-10-04/selection.json), [direct comparison with SQ](../data/wpx/combinations_2026-10-04/versus_best_single.json), [completion hashes](../data/wpx/combinations_2026-10-04/completion.json), [runner](../scripts/wpx_combinations.py).
+[Full machine-readable report](../data/wpx/combinations_2026-10-04/report.json), [selection](../data/wpx/combinations_2026-10-04/selection.json), [direct comparison with SQ](../data/wpx/combinations_2026-10-04/versus_best_single.json), [completion hashes](../data/wpx/combinations_2026-10-04/completion.json), [runner](../research/wpx_combinations.py).
 
-Reproduction uses the completed source snapshot and hash-pinned local caches. A fresh run is `python3 scripts/wpx_combinations.py --out data/wpx/NEW_OUTPUT_DIRECTORY`. Existing outputs are preserved; `--resume` accepts only the identical plan and validated completed candidate artifacts.
+Reproduction uses the completed source snapshot and hash-pinned local caches. A fresh run is `python3 research/wpx_combinations.py --out data/wpx/NEW_OUTPUT_DIRECTORY`. Existing outputs are preserved; `--resume` accepts only the identical plan and validated completed candidate artifacts.

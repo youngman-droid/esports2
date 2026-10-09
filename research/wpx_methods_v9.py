@@ -20,8 +20,8 @@ from scipy.optimize import minimize
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lol_ticker import wpadapt as wa, wpaudit, wpbench, wpgam
-from scripts import wpx_altmodels as alt
-from scripts.wpx_adapt import load_extra
+from research import wpx_altmodels as alt
+from research.wpx_adapt import load_extra
 
 log = logging.getLogger("methods_v9")
 METHODS = ("none", "temperature", "platt")

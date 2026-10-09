@@ -2,7 +2,7 @@
 extension JWT and log every event for a while, so the schema can be mapped.
 
 Usage:
-  python3 scripts/ext_probe.py --jwt <JWT> [--channel <twitch_channel_id>] [--url URL]
+  python3 research/ext_probe.py --jwt <JWT> [--channel <twitch_channel_id>] [--url URL]
                                [--path socket.io] [--namespace /] [--seconds 60]
                                [--auth query|auth|header|all] [--emit EVENT[:JSON]]
 Writes a transcript to data/ext_probe.log (and prints it).

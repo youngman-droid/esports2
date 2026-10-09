@@ -1,7 +1,7 @@
 import copy
 import unittest
 import numpy as np
-from scripts.draft_comfort_compare import history_features, signed_draft, ROLES
+from research.draft_comfort_compare import history_features, signed_draft, ROLES
 
 
 def game(i,day):

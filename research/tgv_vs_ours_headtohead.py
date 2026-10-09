@@ -19,7 +19,7 @@ from scipy.special import expit
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import draft_comfort_compare as dcc
 from lol_ticker import draft
-from lol_ticker.tgv_reconstruction import PublicDraftModel
+from research.tgv_reconstruction import PublicDraftModel
 from tgv_fidelity_gaps import A, K, OE2TGV, norm
 
 ROOT = Path('data/tgv/20260916'); OUT = Path('data/tgv/head-to-head')

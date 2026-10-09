@@ -41,7 +41,7 @@ Reproduction:
 
 ```sh
 OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
-  python3 scripts/wpx_resource.py \
+  python3 research/wpx_resource.py \
   --dataset data/wpx/states_inputs_v2_canonical_before_2026-09-03.npz \
   --output data/wpx/resource_study_reproduction_20260912 \
   --resources data/wpx/action_20260911/resources \

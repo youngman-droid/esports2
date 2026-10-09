@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from scripts.wpx_major import competition_group, filter_arrays
+from research.wpx_major import competition_group, filter_arrays
 
 
 class MajorCohortTests(unittest.TestCase):
