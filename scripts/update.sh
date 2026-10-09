@@ -2,9 +2,10 @@
 # Data refresh: markets, Oracle's Elixir, gol.gg, alignment and source priors.
 # Live GAM refresh is gated while the frozen corrected-input candidate is scored.
 # Usage: sh scripts/update.sh [--no-record]   (logs: data/update.log)
-# Scheduled nightly by scripts/com.lolticker.update.plist (launchd, 06:30 local).
+# Scheduled nightly by the com.lolticker.update agent (scripts/install_agents.sh, 06:30 local).
 set -eu
 cd "$(dirname "$0")/.."
+PATH="$(pwd)/.venv/bin:$PATH"; export PATH   # the repo's venv python3 when present
 OE_2026_ID="1hnpbrUpBMS1TZI7IovfpKeZfWJH1Aptm"
 log(){ echo "$(date -u +%FT%TZ) update: $*"; }
 wait_phase(){

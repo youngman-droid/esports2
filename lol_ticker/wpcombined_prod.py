@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import wpgam, wpcombined, wpbench
+from . import config, wpgam, wpcombined, wpbench
 
 log = logging.getLogger(__name__)
 STACK_KIND = "wpx_live_combination_v1"
@@ -37,12 +37,36 @@ def _identity(path):
     return (s.st_mtime_ns, s.st_size, s.st_ino)
 
 
+def rebase(path):
+    """Map an absolute path recorded by another checkout onto this one.
+
+    Artifacts store absolute paths from the checkout that wrote them.  After the
+    repository moves, ``<old root>/data/...`` is served from this checkout's
+    ``data/`` when that file exists here.  Component contents remain SHA-256
+    verified, so rebasing cannot substitute different bytes.
+    """
+    if path is None:
+        return None
+    path = Path(path)
+    root = Path(config.REPO_ROOT)
+    if not path.is_absolute() or path == root or root in path.parents:
+        return path
+    parts = path.parts
+    for i, part in enumerate(parts):
+        if part == "data":
+            candidate = root.joinpath(*parts[i:])
+            if candidate.exists():
+                return candidate
+    return path
+
+
 def _component(bundle_path, value):
     if not isinstance(value, dict) or not isinstance(value.get("path"), str):
         raise ValueError("Combination component needs a path and hash")
     path = Path(value["path"])
     if not path.is_absolute():
         path = bundle_path.parent/path
+    path = rebase(path)
     digest = value.get("sha256")
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError("Combination component needs a SHA-256")
@@ -89,7 +113,9 @@ def load_bundle(path, expected_sha=None):
         joint["trained_support"] = support
     loaded = dict(bundle=bundle, path=str(path), sha256=digest, base=base, joint=joint,
                   base_sha256=base_sha, joint_sha256=joint_sha, calibration=calibration,
-                  capture=dict(capture, sq_table_path=str(table_path)))
+                  capture=dict(capture, sq_table_path=str(table_path),
+                               composition_root=(str(rebase(capture["composition_root"]))
+                                                 if capture.get("composition_root") else None)))
     _CACHE[str(path)] = (identity, loaded)
     return loaded
 

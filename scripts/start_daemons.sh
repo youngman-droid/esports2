@@ -8,16 +8,21 @@
 # Usage: sh scripts/start_daemons.sh [record|shadow|dashboard|all]   (default: all)
 # Logs: data/record.log, data/shadow.log, data/dashboard.log (appended).
 #
-# launchd cannot run these while the repo lives under ~/Documents: macOS
-# privacy protection denies launchd-spawned processes access to that folder
-# ("Operation not permitted"), so run this from a terminal session instead or
-# grant /usr/bin/python3 Full Disk Access first (see README).
+# Normally launchd owns the daemons (sh scripts/install_agents.sh): a daemon
+# whose com.lolticker.<name> agent is loaded is left to launchd (KeepAlive).
+# This script covers machines without the agents and manual restarts.
+# The repo's .venv is used when present.
 set -eu
 cd "$(dirname "$0")/.."
+PATH="$(pwd)/.venv/bin:$PATH"; export PATH
 what="${1:-all}"
 
 start(){
-  name="$1"; pattern="$2"; logfile="$3"; shift 3
+  name="$1"; pattern="$2"; logfile="$3"; label="com.lolticker.$4"; shift 4
+  if launchctl print "gui/$(id -u)/$label" > /dev/null 2>&1; then
+    echo "$name managed by launchd ($label)"
+    return 0
+  fi
   if pgrep -f "$pattern" > /dev/null; then
     echo "$name already running (pid $(pgrep -f "$pattern" | head -1))"
     return 0
@@ -37,17 +42,17 @@ EOF
 
 case "$what" in
   record|all)
-    start "record daemon" "lol_ticker record" data/record.log \
+    start "record daemon" "lol_ticker record" data/record.log record \
       python3 -m lol_ticker record ;;
 esac
 case "$what" in
   shadow|all)
-    start "prospective shadow recorder" "lol_ticker shadow record" data/shadow.log \
+    start "prospective shadow recorder" "lol_ticker shadow record" data/shadow.log shadow \
       python3 -m lol_ticker shadow record ;;
 esac
 case "$what" in
   dashboard)
-    start "dashboard" "lol_ticker dashboard" data/dashboard.log \
+    start "dashboard" "lol_ticker dashboard" data/dashboard.log dashboard \
       python3 -m lol_ticker dashboard ;;
 esac
 case "$what" in

@@ -1,0 +1,9 @@
+# Versions the test suite was last run against (Python 3.12 venv, 2026-10-09).
+numpy==2.0.2
+scipy==1.13.1
+scikit-learn==1.6.1
+psycopg[binary]==3.2.13
+psycopg-binary==3.2.13
+beautifulsoup4==4.15.0
+lxml==6.1.2
+lightgbm==4.6.0

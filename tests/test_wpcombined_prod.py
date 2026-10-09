@@ -119,3 +119,21 @@ class ProductionCombinationTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RebaseTests(unittest.TestCase):
+    def test_paths_from_a_moved_checkout_map_onto_this_data_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "new"
+            (root / "data" / "wpx").mkdir(parents=True)
+            (root / "data" / "wpx" / "bundle.json").write_text("{}")
+            with mock.patch.object(prod.config, "REPO_ROOT", str(root)):
+                old = Path("/old/checkout/data/wpx/bundle.json")
+                self.assertEqual(prod.rebase(old), root / "data" / "wpx" / "bundle.json")
+                # missing here: keep the recorded path (the caller's error names it)
+                missing = Path("/old/checkout/data/wpx/missing.npz")
+                self.assertEqual(prod.rebase(missing), missing)
+                inside = root / "data" / "wpx" / "bundle.json"
+                self.assertEqual(prod.rebase(inside), inside)
+                self.assertEqual(prod.rebase("relative/data/x"), Path("relative/data/x"))
+                self.assertIsNone(prod.rebase(None))

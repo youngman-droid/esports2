@@ -5,8 +5,18 @@ Collects and stores ticker data for **League of Legends** markets on
 and keeps itself up to date as new games are played. Everything lands in
 **PostgreSQL + TimescaleDB** (database `league`), queryable per game.
 
-Python 3.9+; install the dependencies in `requirements.txt`. No API keys are
-needed (all endpoints are public).
+Python 3.12 in the repo's own venv (the code also runs on 3.9+). No API keys
+are needed (all endpoints are public).
+
+```bash
+/opt/homebrew/bin/python3.12 -m venv .venv
+.venv/bin/pip install -r requirements-experiments.txt -c constraints.txt pytest
+```
+
+`requirements.txt` is what the recorder, dashboard and nightly refresh need;
+`requirements-experiments.txt` adds LightGBM for `research/`. `constraints.txt`
+pins the versions the test suite was last run against. The scripts in
+`scripts/` and the launchd agents use `.venv` automatically when it exists.
 
 The dashboard's **Player impact** page (`/players`) ranks recorded worldwide
 players with competition-adjusted logistic win RAPM, measured in wins added per 100 games. It includes age cohorts,
@@ -575,11 +585,8 @@ matching quoting the wrong series and one outcome settled from it). Since
 are skipped, start-time jitter under 120 s is folded into one attempt instead
 of voiding it as a remake, and Polymarket settlement reads closed markets
 (Gamma hides them without `closed=true`). The refresh is scheduled nightly at 06:30 local
-by `scripts/com.lolticker.update.plist` (launchd; install with
-`cp scripts/com.lolticker.update.plist ~/Library/LaunchAgents/ && launchctl
-bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lolticker.update.plist`);
-it needs the same Full Disk Access grant as the record agent (see
-"Keeping it updated" below), otherwise it exits at once with `EX_CONFIG`.
+by the `com.lolticker.update` launchd agent (`sh scripts/install_agents.sh`,
+see "Keeping it updated" below).
 A failed Oracle's Elixir download (Drive quota) is non-fatal there: the
 previous CSV stays in use and the gol.gg scrape, recency Elo and model refit
 still run.
@@ -656,29 +663,42 @@ the two input contracts accidentally.
 4. checks Kalshi **exchange status** every 60 s (see outages below);
 5. auto-backfills markets that just settled.
 
-Start it (and the shadow recorder) detached from the current shell with
+launchd keeps it running. Install the agents once (and again after moving
+the checkout):
 
 ```bash
-sh scripts/start_daemons.sh all
+sh scripts/install_agents.sh
 ```
 
-which skips daemons already running and starts the rest in their own
-session, so they outlive the terminal or agent session that launched them
-(a plain `nohup ... &` does not: both daemons died that way after the
-2026-09-15 refresh, unnoticed until 09-27). Logs go to `data/record.log`.
+This generates and loads five agents for the checkout's current location
+and its `.venv`: `com.lolticker.record`, `.shadow` and `.dashboard`
+(restarted by launchd if they exit, started at login), `.watchdog` (every
+5 min) and `.update` (nightly refresh, 06:30). `sh scripts/install_agents.sh
+uninstall` removes them; `launchctl print gui/$(id -u)/com.lolticker.record`
+shows one's state and last exit code. Logs go to `data/<name>.log`.
 
-`scripts/com.lolticker.record.plist` runs it under launchd so it survives
-reboots (`cp` to `~/Library/LaunchAgents/` and `launchctl bootstrap
-gui/$(id -u) ...`), **but only once macOS lets launchd-spawned processes
-read this folder**: the repo lives under `~/Documents`, which privacy
-protection closes to anything not started from an app that has been
-granted access. Under launchd, `/bin/sh` and `/usr/bin/python3` get
-"Operation not permitted" on the repo, so the job exits immediately (the
-nightly update agent has failed this way on every run, `launchctl print`
-shows `last exit code = 78: EX_CONFIG`). Fix by granting `/usr/bin/python3`
-and `/bin/sh` Full Disk Access in System Settings → Privacy & Security
-(add them with the + button, Cmd+Shift+G to type the path), or by moving
-the checkout outside `~/Documents`/`~/Desktop`/`~/Downloads`.
+The checkout must live outside `~/Documents`, `~/Desktop` and `~/Downloads`
+(it lives in `~/Developer/esports2`): macOS privacy protection denies
+launchd-spawned processes access to those folders, which is why the
+recorder stayed dead after reboots on 2026-09-12 and 2026-10-08 and the
+earlier nightly agent exited with `EX_CONFIG` on every run. The installer
+refuses to run from them. Artifacts written before the move record absolute
+paths under the old location; the production-combination loader maps
+`<old root>/data/...` onto this checkout's `data/` (contents stay SHA-256
+verified).
+
+**Watchdog.** `python3 -m lol_ticker watchdog` (the `.watchdog` agent) raises
+a macOS notification when the record or shadow daemon is not running, when
+a LoL Esports game is live but no order book has been stored for 15 min, or
+when none has been stored for 6 h. It repeats hourly while a problem lasts
+and announces recovery. For alerts on your phone, set a private push URL
+(for example `https://ntfy.sh/<hard-to-guess-topic>`) before installing:
+`LOL_TICKER_NTFY_URL=... sh scripts/install_agents.sh`.
+
+Without the agents (another machine, or a quick manual restart),
+`sh scripts/start_daemons.sh all` starts whichever daemons are missing in
+their own session so they outlive the terminal or agent session that
+launched them; it leaves daemons that a loaded agent owns to launchd.
 
 ## Backing up to the Windows box
 
