@@ -11,3 +11,4 @@ exports/
 # Recreation of a third-party site (its JS bundles, catalogs, testimonial
 # images): kept local only, not redistributed in this public repo.
 coachless/
+.venv/
