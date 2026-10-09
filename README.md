@@ -675,7 +675,9 @@ and its `.venv`: `com.lolticker.record`, `.shadow` and `.dashboard`
 (restarted by launchd if they exit, started at login), `.watchdog` (every
 5 min) and `.update` (nightly refresh, 06:30). `sh scripts/install_agents.sh
 uninstall` removes them; `launchctl print gui/$(id -u)/com.lolticker.record`
-shows one's state and last exit code. Logs go to `data/<name>.log`.
+shows one's state and last exit code. Logs go to `data/<name>.log`; the nightly
+refresh rotates any daemon log over 20 MB into `data/logs/` (gzipped, newest 6
+kept, `scripts/rotate_logs.sh`).
 
 The checkout must live outside `~/Documents`, `~/Desktop` and `~/Downloads`
 (it lives in `~/Developer/esports2`): macOS privacy protection denies

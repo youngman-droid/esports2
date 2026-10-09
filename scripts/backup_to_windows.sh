@@ -95,7 +95,7 @@ sync_to() {
   # 3. code: every commit (incl. unpushed) as a git bundle + the working tree without data/ and .git/
   log "git bundle + working tree -> $root/code/"
   git bundle create "$root/code/esports2_$stamp.bundle" --all 2>/dev/null
-  rsync -rlt --exclude='data/' --exclude='.git/' --exclude='__pycache__' --exclude='.DS_Store' --exclude='exports/' \
+  rsync -rlt --exclude='/data/' --exclude='/.git/' --exclude='/.venv/' --exclude='__pycache__' --exclude='.DS_Store' --exclude='exports/' \
         "$REPO/" "$root/code/worktree/"
 
   # 4. restore notes

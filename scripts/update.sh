@@ -34,6 +34,7 @@ wait_phase_soft(){
   fi
 }
 
+sh scripts/rotate_logs.sh | while read -r line; do log "$line"; done
 log "phase A: markets (discover -> backfill)"
 ( python3 -m lol_ticker discover && python3 -m lol_ticker backfill ) > data/update_markets.log 2>&1 &
 PA=$!

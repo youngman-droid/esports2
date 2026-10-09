@@ -21,6 +21,22 @@ import numpy as np
 from . import config
 
 log = logging.getLogger("live")
+_LOG_REPEAT_S = 1800
+_logged = {}
+
+
+def _log_throttled(level, msg, *args):
+    """Log a message at most once per ``_LOG_REPEAT_S`` per distinct text: the
+    dashboard and shadow recorder re-derive priors every few seconds, and the
+    same roster/alias warning otherwise fills the logs (75 MB by 2026-10)."""
+    text = msg % args if args else msg
+    now = time.time()
+    if now - _logged.get(text, 0) < _LOG_REPEAT_S:
+        return
+    if len(_logged) > 2000:
+        _logged.clear()
+    _logged[text] = now
+    log.log(level, "%s", text)
 _REQUEST_DEADLINE = ContextVar("live_request_deadline", default=None)
 FEED_LOOKUP_BUDGET_S = 20.0
 
@@ -116,7 +132,7 @@ def _feed_in_game(game_id, now=None):
     try:
         w = _get(FEED + "/window/" + str(game_id), {"startingTime": _iso(t)}, allow_empty=True, timeout=10)
     except Exception as ex:
-        log.warning("feed probe %s failed: %s", game_id, ex)
+        _log_throttled(logging.WARNING, "feed probe %s failed: %s", game_id, ex)
         return False
     frames = (w or {}).get("frames") or []
     return bool(frames) and frames[-1].get("gameState") != "finished"
@@ -752,7 +768,7 @@ def team_priors(conn, teams):
     if missing:
         # Usually a sponsor-name mismatch (fix via draft._TEAM_ALIASES);
         # without it the model silently treats the teams as even.
-        log.warning("team_priors: no OE/gol.gg rating match for %s "
+        _log_throttled(logging.WARNING, "team_priors: no OE/gol.gg rating match for %s "
                     "(normalized %s)", missing,
                     [norm_team(t) for t in missing])
     provenance = {"oe": {side: source_oe.get(name, {"available": False, "source": "oe_games+oe_ratings"})
@@ -973,7 +989,7 @@ def lineup_adjusted_priors(conn, teams, priors, blue_players, red_players):
         priors["pelo_blue"], priors["pelo_red"] = means["blue"], means["red"]
         if any(v["applied"] for v in info.values()):
             priors["found"] = True
-            log.info("lineup-adjusted pelo: %.3f -> %.3f (%s)",
+            _log_throttled(logging.INFO, "lineup-adjusted pelo: %.3f -> %.3f (%s)",
                      old if old is not None else float("nan"),
                      priors["pelo_oe"],
                      {s: v for s, v in info.items() if v["applied"]})
@@ -1012,7 +1028,7 @@ def roster_check(conn, teams, blue_players, red_players, prior_provenance=None):
                      "reference_age_days": ref.get("age_days", _source_age_days(ref.get("date"))),
                      "reference_source": ref.get("source", "golgg_games")}
         if changed:
-            log.warning("roster change for %s: %s in, %s out "
+            _log_throttled(logging.WARNING, "roster change for %s: %s in, %s out "
                         "(prior reflects %s game %s on %s)",
                         team, new, missing, ref.get("source", "golgg_games"), ref["game_id"], ref["date"])
     return out
