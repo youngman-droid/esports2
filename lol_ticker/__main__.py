@@ -33,6 +33,7 @@ def main():
     r.add_argument("--once", action="store_true", help="single pass, then exit")
 
     sub.add_parser("status", help="summarize stored data")
+    sub.add_parser("watchdog", help="one health pass: alert if a daemon is down or books are stale")
 
     g = sub.add_parser("game", help="find games by team / date (YYYY-MM-DD) terms")
     g.add_argument("terms", nargs="+")
@@ -148,6 +149,9 @@ def main():
             collector.record(conn, once=args.once)
         except KeyboardInterrupt:
             print("\nstopped")
+    elif args.cmd == "watchdog":
+        from . import watchdog
+        sys.exit(1 if watchdog.run_once(conn) else 0)
     elif args.cmd == "status":
         rows, fast, slow = collector.status(conn)
         print("%-11s %8s %6s %10s %10s %9s  %s" % (
