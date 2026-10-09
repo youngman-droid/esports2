@@ -3,8 +3,8 @@
 # mounted share (the Windows D: drive over Tailscale).  Two phases so the slow
 # pg_dump can run before the share is mounted:
 #   sh scripts/backup_to_windows.sh dump              # pg_dump -> $STAGE (local)
-#   sh scripts/backup_to_windows.sh sync /Volumes/D   # copy latest staged dump + data/ + code -> <dest>/$BACKUP_SUBDIR, verify
-#   sh scripts/backup_to_windows.sh all  /Volumes/D   # both
+#   sh scripts/backup_to_windows.sh sync /Volumes     # copy latest staged dump + data/ + code -> <dest>/$BACKUP_SUBDIR, verify
+#   sh scripts/backup_to_windows.sh all  /Volumes     # both (-> /Volumes/esports2-backup)
 # Env: LOL_TICKER_DSN (postgresql://localhost:5432/league), PGBIN (/opt/homebrew/opt/postgresql@18/bin),
 #      STAGE (~/.cache/esports2-backup), BACKUP_SUBDIR (esports2-backup), VERIFY=full (re-read the copied
 #      dump from the share and compare sha256; default checks size + archive TOC only), KEEP_STAGE=1 (keep local dump),\n#      TAR_MIN_FILES (500: second-level data/ folders with more files than this are shipped as one tar).
@@ -46,7 +46,9 @@ sync_to() {
   stamp=$(cat "$STAGE/LATEST")
   [ -f "$STAGE/league_$stamp.pgdump" ] || die "staged dump $stamp was already synced and removed; run 'dump' or 'all' for a fresh one"
   root="$dest/$SUB"
-  mkdir -p "$root/postgres" "$root/data" "$root/code"
+  mkdir -p "$root/postgres" "$root/data" "$root/code" 2>/dev/null \
+    && touch "$root/.write_test" 2>/dev/null && rm -f "$root/.write_test" \
+    || die "cannot write to $root (share mounted read-only? give your account Change permission on the Windows share, then remount)"
   log "destination $root"
 
   # 1. Postgres dump + globals + manifest

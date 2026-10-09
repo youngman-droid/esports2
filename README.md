@@ -705,12 +705,14 @@ launched them; it leaves daemons that a loaded agent owns to launchd.
 ## Backing up to the Windows box
 
 `scripts/backup_to_windows.sh` copies everything that is not in git to the
-Windows PC's 12 TB drive over Tailscale. The drive is reachable only as an SMB
-share (`Code`), so mount it first in Finder (Cmd+K, `smb://100.123.212.8`, tick
-"remember in keychain"), then:
+Windows PC's 12 TB drive (LAN `192.168.1.70`, or Tailscale `100.123.212.8`).
+The backup folder is its own SMB share, `esports2-backup`; mount it in Finder
+(Cmd+K, `smb://192.168.1.70/esports2-backup`, tick "remember in keychain") with
+your account holding Change permission on the share (a Read-only share mounts
+read-only and the sync fails), then:
 
 ```bash
-sh scripts/backup_to_windows.sh all /Volumes/Code      # dump (~5 min) + sync; or `dump` / `sync <mount>` separately
+sh scripts/backup_to_windows.sh all /Volumes      # dump (~5 min) + sync into /Volumes/esports2-backup; or `dump` / `sync /Volumes` separately
 ```
 
 `dump` writes a `pg_dump -Fc --compress=zstd:9` of `league` (77 GB on disk,
