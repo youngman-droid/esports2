@@ -8,8 +8,11 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import socket
+import urllib.error
 import os
 import time
+import threading
 
 import numpy as np
 from psycopg.types.json import Json
@@ -19,100 +22,119 @@ from . import config, util, wpbench, wpgam, wphist
 
 log = logging.getLogger("shadow")
 RESULT_PATH = os.path.join(wpgam.OUT_DIR, "shadow_score.json")
-PROTOCOL_VERSION = "shadow_v9_recency_series"
+PROTOCOL_VERSION = "shadow_v13_production_combination"
 DEFAULT_INTERVAL_S = 15
 CONFIRMATORY_GAMES = 100
+# Primary-metric rows: the market quote may lead the model's feed frame by at
+# most this much wall-clock time.  The feed itself lags the broadcast by
+# roughly 45-140 s; anything beyond that is recorder delay, and rows captured
+# after a stall hand the market minutes of extra game state.  (2026-09-03
+# audit: at leads under 90 s the model and market were indistinguishable;
+# the aggregate gap was driven by leads of 3-20 minutes.)
+MAX_MARKET_LEAD_S = 90.0
+# Warn when one capture takes longer than this, naming the slowest stage.
+SLOW_CAPTURE_S = 60.0
+# A feed frame older than this is not a live forecast: the recorder found a
+# stalled or finished game and would store minutes-old state against a fresh
+# market quote.  (2026-09-03 audit: 62 rows, mostly single late captures.)
+MAX_FEED_LAG_S = 600.0
+# Successive estimates of the same attempt's start drift by a few seconds as
+# the feed back-fills opening frames; starts closer than this are one attempt,
+# not a remake (a real remake restarts minutes later).
+START_JITTER_S = 120
 _SCHEMA_READY = False
+_MAINTENANCE_THREAD = None
+_RECORDER_SOURCE_REVISION = None
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS shadow_protocols (
-    protocol_id TEXT PRIMARY KEY,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    config JSONB NOT NULL
-);
-CREATE TABLE IF NOT EXISTS shadow_meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS shadow_predictions (
-    protocol_id TEXT NOT NULL REFERENCES shadow_protocols(protocol_id),
-    game_id TEXT NOT NULL,
-    game_start_ts BIGINT NOT NULL,
-    minute INT NOT NULL,
-    captured_at TIMESTAMPTZ NOT NULL,
-    feed_ts BIGINT NOT NULL,
-    feed_lag_s DOUBLE PRECISION NOT NULL,
-    league TEXT,
-    game_num INT,
-    blue_team TEXT NOT NULL,
-    red_team TEXT NOT NULL,
-    model_p DOUBLE PRECISION NOT NULL CHECK (model_p BETWEEN 0 AND 1),
-    polymarket_p DOUBLE PRECISION CHECK (polymarket_p BETWEEN 0 AND 1),
-    kalshi_p DOUBLE PRECISION CHECK (kalshi_p BETWEEN 0 AND 1),
-    polymarket_blend_p DOUBLE PRECISION CHECK (polymarket_blend_p BETWEEN 0 AND 1),
-    kalshi_blend_p DOUBLE PRECISION CHECK (kalshi_blend_p BETWEEN 0 AND 1),
-    recommended_p DOUBLE PRECISION CHECK (recommended_p BETWEEN 0 AND 1),
-    recommended_source TEXT,
-    polymarket_lead_s DOUBLE PRECISION,
-    kalshi_lead_s DOUBLE PRECISION,
-    model_kind TEXT NOT NULL,
-    blend_kind TEXT,
-    model_sha256 TEXT NOT NULL,
-    legacy_component_sha256 TEXT,
-    stack_sha256 TEXT NOT NULL,
-    live_blend_w_gam DOUBLE PRECISION,
-    code_revision TEXT,
-    blend_sha256 TEXT,
-    state JSONB NOT NULL,
-    markets JSONB NOT NULL,
-    PRIMARY KEY (protocol_id, game_id, game_start_ts, minute),
-    CHECK (minute >= 0)
-);
-CREATE INDEX IF NOT EXISTS idx_shadow_predictions_capture
-    ON shadow_predictions (protocol_id, captured_at);
-ALTER TABLE shadow_predictions ADD COLUMN IF NOT EXISTS legacy_component_sha256 TEXT;
-ALTER TABLE shadow_predictions ADD COLUMN IF NOT EXISTS stack_sha256 TEXT;
-ALTER TABLE shadow_predictions ADD COLUMN IF NOT EXISTS live_blend_w_gam DOUBLE PRECISION;
-ALTER TABLE shadow_predictions ADD COLUMN IF NOT EXISTS code_revision TEXT;
-CREATE TABLE IF NOT EXISTS shadow_outcomes (
-    game_id TEXT NOT NULL,
-    game_start_ts BIGINT NOT NULL,
-    recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    status TEXT NOT NULL CHECK (status IN ('resolved', 'void')),
-    blue_win SMALLINT CHECK (blue_win IN (0, 1)),
-    source TEXT NOT NULL,
-    evidence JSONB,
-    PRIMARY KEY (game_id, game_start_ts),
-    CHECK ((status = 'resolved' AND blue_win IS NOT NULL)
-        OR (status = 'void' AND blue_win IS NULL))
-);
-CREATE TABLE IF NOT EXISTS shadow_confirmatory_games (
-    protocol_id TEXT NOT NULL REFERENCES shadow_protocols(protocol_id),
-    platform TEXT NOT NULL CHECK (platform IN ('polymarket', 'kalshi')),
-    ordinal INT NOT NULL,
-    game_id TEXT NOT NULL,
-    game_start_ts BIGINT NOT NULL,
-    registered_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    PRIMARY KEY (protocol_id, platform, ordinal),
-    UNIQUE (protocol_id, platform, game_id, game_start_ts)
-);
-CREATE OR REPLACE FUNCTION reject_shadow_prediction_mutation()
-RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-    RAISE EXCEPTION 'shadow_predictions is append-only';
-END;
-$$;
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_trigger
-                   WHERE tgname='shadow_predictions_immutable') THEN
-        CREATE TRIGGER shadow_predictions_immutable
-        BEFORE UPDATE OR DELETE ON shadow_predictions
-        FOR EACH ROW EXECUTE FUNCTION reject_shadow_prediction_mutation();
-    END IF;
-END;
-$$;
-"""
+SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS shadow_protocols (
+        protocol_id TEXT PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+        config JSONB NOT NULL
+    );""",
+    """CREATE TABLE IF NOT EXISTS shadow_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );""",
+    """CREATE TABLE IF NOT EXISTS shadow_predictions (
+        protocol_id TEXT NOT NULL REFERENCES shadow_protocols(protocol_id),
+        game_id TEXT NOT NULL,
+        game_start_ts BIGINT NOT NULL,
+        minute INT NOT NULL,
+        captured_at TIMESTAMPTZ NOT NULL,
+        feed_ts BIGINT NOT NULL,
+        feed_lag_s DOUBLE PRECISION NOT NULL,
+        league TEXT,
+        game_num INT,
+        blue_team TEXT NOT NULL,
+        red_team TEXT NOT NULL,
+        model_p DOUBLE PRECISION NOT NULL CHECK (model_p BETWEEN 0 AND 1),
+        polymarket_p DOUBLE PRECISION CHECK (polymarket_p BETWEEN 0 AND 1),
+        kalshi_p DOUBLE PRECISION CHECK (kalshi_p BETWEEN 0 AND 1),
+        polymarket_blend_p DOUBLE PRECISION CHECK (polymarket_blend_p BETWEEN 0 AND 1),
+        kalshi_blend_p DOUBLE PRECISION CHECK (kalshi_blend_p BETWEEN 0 AND 1),
+        recommended_p DOUBLE PRECISION CHECK (recommended_p BETWEEN 0 AND 1),
+        recommended_source TEXT,
+        polymarket_lead_s DOUBLE PRECISION,
+        kalshi_lead_s DOUBLE PRECISION,
+        model_kind TEXT NOT NULL,
+        blend_kind TEXT,
+        model_sha256 TEXT NOT NULL,
+        legacy_component_sha256 TEXT,
+        stack_sha256 TEXT NOT NULL,
+        live_blend_w_gam DOUBLE PRECISION,
+        code_revision TEXT,
+        blend_sha256 TEXT,
+        state JSONB NOT NULL,
+        markets JSONB NOT NULL,
+        PRIMARY KEY (protocol_id, game_id, game_start_ts, minute),
+        CHECK (minute >= 0)
+    );""",
+    """CREATE INDEX IF NOT EXISTS idx_shadow_predictions_capture
+        ON shadow_predictions (protocol_id, captured_at);""",
+    'ALTER TABLE shadow_predictions ADD COLUMN IF NOT EXISTS legacy_component_sha256 TEXT;',
+    'ALTER TABLE shadow_predictions ADD COLUMN IF NOT EXISTS stack_sha256 TEXT;',
+    'ALTER TABLE shadow_predictions ADD COLUMN IF NOT EXISTS live_blend_w_gam DOUBLE PRECISION;',
+    'ALTER TABLE shadow_predictions ADD COLUMN IF NOT EXISTS code_revision TEXT;',
+    """CREATE TABLE IF NOT EXISTS shadow_outcomes (
+        game_id TEXT NOT NULL,
+        game_start_ts BIGINT NOT NULL,
+        recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+        status TEXT NOT NULL CHECK (status IN ('resolved', 'void')),
+        blue_win SMALLINT CHECK (blue_win IN (0, 1)),
+        source TEXT NOT NULL,
+        evidence JSONB,
+        PRIMARY KEY (game_id, game_start_ts),
+        CHECK ((status = 'resolved' AND blue_win IS NOT NULL)
+            OR (status = 'void' AND blue_win IS NULL))
+    );""",
+    """CREATE TABLE IF NOT EXISTS shadow_confirmatory_games (
+        protocol_id TEXT NOT NULL REFERENCES shadow_protocols(protocol_id),
+        platform TEXT NOT NULL CHECK (platform IN ('polymarket', 'kalshi')),
+        ordinal INT NOT NULL,
+        game_id TEXT NOT NULL,
+        game_start_ts BIGINT NOT NULL,
+        registered_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+        PRIMARY KEY (protocol_id, platform, ordinal),
+        UNIQUE (protocol_id, platform, game_id, game_start_ts)
+    );""",
+    """CREATE OR REPLACE FUNCTION reject_shadow_prediction_mutation()
+    RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+        RAISE EXCEPTION 'shadow_predictions is append-only';
+    END;
+    $$;""",
+    """DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_trigger
+                       WHERE tgname='shadow_predictions_immutable') THEN
+            CREATE TRIGGER shadow_predictions_immutable
+            BEFORE UPDATE OR DELETE ON shadow_predictions
+            FOR EACH ROW EXECUTE FUNCTION reject_shadow_prediction_mutation();
+        END IF;
+    END;
+    $$;""",
+)
 
 
 def _utc_now():
@@ -127,12 +149,21 @@ def _protocol_config():
         "historical_backfill": False,
         "sampling_unit": "first captured live frame per integer game minute",
         "sampling_cadence_s": DEFAULT_INTERVAL_S,
-        "forecast_inputs": "team ratings (OE and gol.gg Elo at K=30 and K=120), current-series score, draft, champion-state scores, window-health deaths, stateful Baron/Elder timers, gold share, kill recency, and game state only; no quote from the current match",
+        "forecast_inputs": "team ratings (OE and gol.gg Elo at K=30 and K=120), current-series score, draft, champion-state scores, window-health deaths, stateful Baron/Elder timers, gold share, kill recency, objective remaining time, exact120/300s trajectories, patch composition proxies and pinned prior-patch SQ decaying to zero at20m; no quote from the current match",
         "historical_odds": "offline teacher input only; chronological holdout gate required for deployment",
         "market_price": "blue-oriented midpoint captured only as a comparison benchmark",
         "valid_market": "non-stale and non-settled quote",
+        "quote_collection": "bounded background lookups; latest already-observed quote no more than 15 seconds old at capture; cold or expired cache is missing, never backfilled",
+        "quote_lookup_budget_s": 12.0,
+        "quote_max_age_s": 15.0,
+        "primary_market_lead_s": MAX_MARKET_LEAD_S,
+        "max_feed_lag_s": MAX_FEED_LAG_S,
+        "start_jitter_s": START_JITTER_S,
+        "market_matching": "exchange event must list both teams; nearest scheduled start within live.MAX_EVENT_OFFSET_S; quotes and settlements from tickers outside that window are invalid",
+        "primary_rows": "rows whose market quote leads the model's feed frame by at most primary_market_lead_s; all-lead rows are reported separately",
+        "outcome_sources": "local feed/gol.gg link, Oracle's Elixir, then exchange settlement (Kalshi market result, Polymarket resolution) of the market quoted in the row",
         "primary_metric": "game-balanced Brier on identical independent-forecast/market rows",
-        "primary_comparison": "holdout-gated promoted odds-free stack versus raw platform market; constrained GAM alone whenever the comparator gate is rejected",
+        "primary_comparison": "explicitly user-promoted joint combination versus raw platform market; manual promotion is not a claim that the historical statistical gate passed; artifact identity is pinned on every row",
         "uncertainty": "paired game-block bootstrap",
         "confirmatory_games_per_platform": CONFIRMATORY_GAMES,
         "confirmatory_freeze": "first score pass with 100 complete-case resolved games",
@@ -151,8 +182,8 @@ def _ensure_tables(conn):
     if not _SCHEMA_READY:
         # Run the idempotent DDL once per process.  Checking only table/trigger
         # existence used to skip ADD COLUMN migrations on an older schema.
-        conn.execute(SCHEMA)
-        conn.commit()
+        from . import db
+        db.apply_schema(conn, SCHEMA)
         _SCHEMA_READY = True
 
 
@@ -227,18 +258,19 @@ def _code_revision():
 
 
 def _artifact_versions():
-    from . import wpx
+    from . import wpx, wpcombined_prod
     model_path = wpgam.MODEL_PATH
     blend_path = wphist.ARTIFACT_PATH
     model_sha = _sha256(model_path)
+    model_kind = wpgam.load_model(model_path)["kind"]
     stack = wpx.load_live_stack()
     deployed_stack = bool(stack.get("deployed"))
     legacy_sha = (_sha256(wpx.LEGACY_LIVE_MODEL_PATH)
                   if deployed_stack else None)
     weight = float(stack.get("w_gam", 1.0)) if deployed_stack else 1.0
     stack_spec = {
-        "model_kind": ("%s+%s" % (wpgam.MODEL_KIND, wpx.LEGACY_LIVE_CONTRACT)
-                       if deployed_stack else wpgam.MODEL_KIND),
+        "model_kind": ("%s+%s" % (model_kind, wpx.LEGACY_LIVE_CONTRACT)
+                       if deployed_stack else model_kind),
         "model_sha256": model_sha,
         "legacy_component_sha256": legacy_sha,
         "live_blend_w_gam": weight,
@@ -255,14 +287,32 @@ def _artifact_versions():
         "live_blend_w_gam": weight,
         "legacy_component_sha256": legacy_sha,
         "stack_sha256": stack_sha,
-        "code_revision": _code_revision(),
+        # A running process keeps its imported implementation even when files
+        # on disk change. Pin that revision until the recorder is restarted.
+        "code_revision": _RECORDER_SOURCE_REVISION or _code_revision(),
         "blend_kind": None,
         "blend_sha256": None,
     }
+    try:
+        combination = wpcombined_prod.load_active(wpx.LIVE_STACK_PATH)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        combination = None
+        out["combination_error"] = str(error)
+    if combination is not None:
+        out.update(model_kind=wpcombined_prod.MODEL_KIND,
+                   model_sha256=combination["sha256"], stack_sha256=combination["stack_sha256"],
+                   live_blend_w_gam=1., legacy_component_sha256=None,
+                   base_component_sha256=combination["base_sha256"],
+                   joint_component_sha256=combination["joint_sha256"])
     if os.path.exists(blend_path):
-        artifact = wphist.load_artifact(blend_path)
-        out["blend_kind"] = artifact.get("kind") if artifact.get("deployed") else None
-        out["blend_sha256"] = _sha256(blend_path)
+        try:
+            artifact = wphist.load_artifact(blend_path)
+            out["blend_kind"] = artifact.get("kind") if artifact.get("deployed") and combination is None else None
+            out["blend_sha256"] = _sha256(blend_path)
+        except (ValueError, OSError, KeyError) as exc:
+            # A rejected optional comparator must not stop GAM-only capture.
+            out["blend_error"] = str(exc)
+            log.warning("shadow optional blend unavailable: %s", exc)
     return out
 
 
@@ -297,33 +347,84 @@ def _already_recorded(conn, protocol_id, game_id, game_start_ts, minute):
         (protocol_id, str(game_id), int(game_start_ts), int(minute))).fetchone() is not None
 
 
+def _canonical_start(conn, protocol_id, game_id, start_ts):
+    """Reuse the start already recorded for this attempt when the new estimate
+    is within START_JITTER_S of it, so jitter does not split one game into
+    several attempts (which the resolver would then void as remakes)."""
+    row = conn.execute(
+        """SELECT game_start_ts FROM shadow_predictions
+           WHERE protocol_id=%s AND game_id=%s
+             AND abs(game_start_ts - %s) <= %s
+           ORDER BY abs(game_start_ts - %s), captured_at LIMIT 1""",
+        (protocol_id, str(game_id), int(start_ts), START_JITTER_S, int(start_ts))).fetchone()
+    return int(row["game_start_ts"]) if row else int(start_ts)
+
+
+class _StageClock:
+    """Wall-clock seconds per capture stage, for finding recorder stalls."""
+
+    def __init__(self):
+        self.started = time.monotonic()
+        self.mark = self.started
+        self.stages = {}
+
+    def lap(self, name):
+        now = time.monotonic()
+        self.stages[name] = round(self.stages.get(name, 0.0) + now - self.mark, 3)
+        self.mark = now
+
+    def total(self):
+        return round(time.monotonic() - self.started, 3)
+
+    def slowest(self):
+        return max(self.stages.items(), key=lambda kv: kv[1]) if self.stages else ("none", 0.0)
+
+
 def _record_game(conn, protocol, game, versions):
-    from . import live
+    from . import live, live_quotes
+    clock = _StageClock()
+    live_quotes.CACHE.prefetch(game)
     if hasattr(live.team_priors, "_cache"):
         del live.team_priors._cache
     priors = live.team_priors(conn, game["teams"])
     priors["series_diff"] = live.series_prior(game)
-    estimate = live.estimate_series(
-        conn, game["game_id"], priors, since_ts=0, teams=game["teams"])
-    oriented = _orient_game(game, estimate)
-    if oriented["teams"] != game["teams"]:
-        priors = live.team_priors(conn, oriented["teams"])
-        priors["series_diff"] = live.series_prior(oriented)
+    clock.lap("priors")
+    # Side correction shares this same per-game feed budget; a second pass
+    # cannot reset the timer and stall all the games behind it.
+    with live.request_deadline(live.FEED_LOOKUP_BUDGET_S):
         estimate = live.estimate_series(
-            conn, oriented["game_id"], priors, since_ts=0,
-            teams=oriented["teams"])
+            conn, game["game_id"], priors, since_ts=0, teams=game["teams"],
+            research_context=game.get("research_context") or {"series_id": game.get("series_id"),
+                                                              "game_num": game.get("number")})
+        oriented = _orient_game(game, estimate)
+        if oriented["teams"] != game["teams"]:
+            priors = live.team_priors(conn, oriented["teams"])
+            priors["series_diff"] = live.series_prior(oriented)
+            estimate = live.estimate_series(
+                conn, oriented["game_id"], priors, since_ts=0,
+                teams=oriented["teams"], research_context=oriented.get("research_context")
+                or {"series_id": oriented.get("series_id"), "game_num": oriented.get("number")})
+    clock.lap("feed_and_model")
     frames = estimate.get("frames") or []
     if not frames or not estimate.get("game_start_ts"):
+        _log_slow_capture(clock, game, None)
         return 0
     frame = frames[-1]
     minute = max(0, int(frame.get("clock_s", 0)) // 60)
-    start_ts = int(estimate["game_start_ts"])
+    start_ts = _canonical_start(conn, protocol["protocol_id"], oriented["game_id"],
+                                int(estimate["game_start_ts"]))
+    live_quotes.CACHE.request(oriented, start_ts)
+    feed_lag = time.time() - float(frame["ts"])
+    if feed_lag > MAX_FEED_LAG_S:
+        log.info("shadow skip %s minute=%d: feed frame %.0fs old (stale, > %.0fs)",
+                 oriented["game_id"], minute, feed_lag, MAX_FEED_LAG_S)
+        return 0
     if _already_recorded(conn, protocol["protocol_id"], oriented["game_id"],
                          start_ts, minute):
+        _log_slow_capture(clock, game, minute)
         return 0
-    markets = live.market_prices(
-        conn, oriented["teams"], oriented.get("number") or 1,
-        deciding=oriented.get("deciding", False))
+    markets = live_quotes.CACHE.snapshot(oriented, start_ts)
+    clock.lap("markets")
     valid = _valid_market_quotes(markets)
     blend = None
     blend_error = None
@@ -333,6 +434,7 @@ def _record_game(conn, protocol, game, versions):
             estimate.get("blue_champs") or [], estimate.get("red_champs") or [])
     except (OSError, ValueError, KeyError) as exc:
         blend_error = str(exc)
+    clock.lap("blend")
     captured = time.time()
 
     def value(platform, field):
@@ -356,7 +458,15 @@ def _record_game(conn, protocol, game, versions):
     state["pelo_adjustment"] = estimate.get("pelo_adjustment")
     if blend_error:
         state["blend_error"] = blend_error
-    conn.execute(
+    # Stage timings up to the insert; the insert itself is logged only.
+    state["capture_timing"] = dict(clock.stages, before_insert=clock.total())
+    observed_at = estimate.get("feed_observed_at")
+    state["capture_timing"]["upstream_feed_age_s"] = estimate.get("upstream_feed_age_s")
+    state["capture_timing"]["processing_after_feed_s"] = (
+        max(0.0, captured - observed_at) if observed_at is not None else None)
+    state["capture_timing"]["quote_cache_ages_s"] = {
+        p: r.get("quote_age_s") for p, r in markets.items()}
+    inserted = conn.execute(
         """INSERT INTO shadow_predictions (
                protocol_id, game_id, game_start_ts, minute, captured_at,
                feed_ts, feed_lag_s, league, game_num, blue_team, red_team,
@@ -368,7 +478,7 @@ def _record_game(conn, protocol, game, versions):
            VALUES (%s,%s,%s,%s,to_timestamp(%s),%s,%s,%s,%s,%s,%s,
                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                    %s,%s,%s,%s)
-           ON CONFLICT DO NOTHING""",
+           ON CONFLICT DO NOTHING RETURNING minute""",
         (protocol["protocol_id"], str(oriented["game_id"]), start_ts, minute,
          captured, int(frame["ts"]), captured - float(frame["ts"]),
          oriented.get("league"), oriented.get("number"), oriented["teams"][0],
@@ -381,12 +491,40 @@ def _record_game(conn, protocol, game, versions):
          versions["blend_kind"], versions["model_sha256"],
          versions["legacy_component_sha256"], versions["stack_sha256"],
          versions["live_blend_w_gam"], versions["code_revision"],
-         versions["blend_sha256"], Json(state), Json(markets)))
+         versions["blend_sha256"], Json(state), Json(markets))).fetchone()
     conn.commit()
-    log.info("shadow captured %s %s vs %s minute=%d feed_lag=%.1fs markets=%s",
+    if inserted is None:
+        return 0
+    # Only this new frame can enter the bounded, forward-only candidate queue.
+    # Its entire immutable state (including effective priors and draft) is the
+    # input evidence. Optional inference never runs on the capture thread.
+    from . import wpcandidate
+    try:
+        wpcandidate.submit_capture({"protocol_id": protocol["protocol_id"],
+                                    "game_id": str(oriented["game_id"]),
+                                    "game_start_ts": start_ts, "minute": minute,
+                                    "captured_at": captured, "state": state})
+    except Exception:
+        log.exception("optional candidate enqueue failed; incumbent frame is recorded")
+    clock.lap("insert")
+    log.info("shadow captured %s %s vs %s minute=%d feed_lag=%.1fs markets=%s "
+             "timing=%s total=%.1fs",
              oriented["game_id"], oriented["teams"][0], oriented["teams"][1],
-             minute, captured - float(frame["ts"]), ",".join(sorted(valid)) or "none")
+             minute, captured - float(frame["ts"]), ",".join(sorted(valid)) or "none",
+             json.dumps(clock.stages, sort_keys=True), clock.total())
+    _log_slow_capture(clock, oriented, minute)
     return 1
+
+
+def _log_slow_capture(clock, game, minute):
+    total = clock.total()
+    if total >= SLOW_CAPTURE_S:
+        stage, seconds = clock.slowest()
+        log.warning("slow shadow capture for %s (%s) minute=%s: %.1fs total, "
+                    "slowest stage %s=%.1fs, stages=%s",
+                    game.get("game_id"), " vs ".join(game.get("teams") or []),
+                    minute, total, stage, seconds,
+                    json.dumps(clock.stages, sort_keys=True))
 
 
 def record_once(conn):
@@ -401,6 +539,10 @@ def record_once(conn):
         except Exception:
             conn.rollback()
             log.exception("shadow capture failed for %s", game.get("game_id"))
+    # A pass that only read (no new minute, no frames) would otherwise leave
+    # the connection idle in transaction holding share locks on the rating
+    # tables between polls, which blocks and can deadlock the nightly DDL.
+    conn.rollback()
     return {"live_games": len(games), "captured": captured,
             "protocol_id": protocol["protocol_id"]}
 
@@ -421,7 +563,7 @@ def _winner_from_teams(prediction, blue_team, red_team, winner_side):
     return None
 
 
-def _automatic_outcome(conn, prediction):
+def _automatic_outcome(conn, prediction, exchange=True):
     from .draft import norm_team
     if _table_exists(conn, "feed_games") and _table_exists(conn, "golgg_games"):
         row = conn.execute(
@@ -454,6 +596,122 @@ def _automatic_outcome(conn, prediction):
                 return 1, "oracle_elixir", dict(row)
             if winner == norm_team(prediction["red_team"]):
                 return 0, "oracle_elixir", dict(row)
+    if exchange:
+        return _exchange_settlement(conn, prediction)
+    return None
+
+
+def _quoted_markets(conn, prediction):
+    """Kalshi tickers and Polymarket slugs quoted in this attempt's rows.
+
+    Every row stores the exact markets it compared against, so settlement can
+    be read back from the same instruments without any name matching beyond
+    the blue/red orientation already recorded with the quote.
+    """
+    tickers, slugs = {}, {}
+    rows = conn.execute(
+        """SELECT markets FROM shadow_predictions
+           WHERE game_id=%s AND game_start_ts=%s""",
+        (str(prediction["game_id"]), int(prediction["game_start_ts"]))).fetchall()
+    for row in rows:
+        markets = row["markets"] or {}
+        kalshi = markets.get("kalshi") or {}
+        for sub, detail in (kalshi.get("detail") or {}).items():
+            if isinstance(detail, dict) and detail.get("ticker"):
+                tickers.setdefault(detail["ticker"], (sub, kalshi.get("source")))
+        polymarket = markets.get("polymarket") or {}
+        for detail in (polymarket.get("detail") or {}).values():
+            if isinstance(detail, dict) and detail.get("slug"):
+                slugs.setdefault(detail["slug"], polymarket.get("source"))
+    return tickers, slugs
+
+
+def _settlement_winner(prediction, team_norm, yes_won):
+    """Blue-win flag from 'did ``team_norm`` win' in the row's orientation."""
+    from .draft import norm_team
+    if team_norm == norm_team(prediction["blue_team"]):
+        return 1 if yes_won else 0
+    if team_norm == norm_team(prediction["red_team"]):
+        return 0 if yes_won else 1
+    return None
+
+
+def _slug_date_ok(slug, game_start_ts, max_days=2):
+    """Polymarket slugs carry the series date (``lol-png1-vks-2026-08-30``)."""
+    import datetime as dt
+    import re as _re
+    m = _re.search(r"(\d{4})-(\d\d)-(\d\d)", slug or "")
+    if not m or game_start_ts is None:
+        return True
+    try:
+        slug_day = dt.date(*map(int, m.groups()))
+    except ValueError:
+        return True
+    game_day = dt.datetime.utcfromtimestamp(int(game_start_ts)).date()
+    return abs((slug_day - game_day).days) <= max_days
+
+
+def _exchange_settlement(conn, prediction):
+    """Outcome from the settlement of the exchange markets quoted in the row.
+
+    A per-map market settles on that map; a match-winner market is quoted only
+    for the deciding map, where the two coincide.  Network errors are logged
+    and leave the game pending for the next pass.
+    """
+    from . import live
+    tickers, slugs = _quoted_markets(conn, prediction)
+    for ticker, (sub, source) in tickers.items():
+        if not live.ticker_offset_ok(ticker, prediction["game_start_ts"]):
+            log.warning("ignoring settlement of %s for game %s: scheduled %.0fh from game start",
+                        ticker, prediction["game_id"],
+                        (live.ticker_time(ticker) - prediction["game_start_ts"]) / 3600.0)
+            continue
+        try:
+            market = live._get(
+                "https://api.elections.kalshi.com/trade-api/v2/markets/%s" % ticker,
+                timeout=15)["market"]
+        except Exception as exc:
+            log.warning("kalshi settlement lookup failed %s: %s", ticker, exc)
+            continue
+        result = market.get("result")
+        if result not in ("yes", "no"):
+            continue
+        won = _settlement_winner(prediction, sub, result == "yes")
+        if won is not None:
+            return won, "kalshi_settlement", {
+                "ticker": ticker, "result": result, "market_source": source,
+                "yes_team": sub, "status": market.get("status")}
+    from .draft import norm_team
+    for slug, source in slugs.items():
+        if not _slug_date_ok(slug, prediction["game_start_ts"]):
+            log.warning("ignoring settlement of %s for game %s: slug date far from game start",
+                        slug, prediction["game_id"])
+            continue
+        try:
+            # Gamma omits closed markets from /markets?slug= unless asked for
+            # them explicitly; without closed=true no settlement was ever read.
+            markets = live._get("https://gamma-api.polymarket.com/markets",
+                                {"slug": slug, "closed": "true"}, timeout=15) or []
+        except Exception as exc:
+            log.warning("polymarket settlement lookup failed %s: %s", slug, exc)
+            continue
+        market = markets[0] if isinstance(markets, list) and markets else None
+        if not market or not market.get("closed"):
+            continue
+        try:
+            outcomes = json.loads(market.get("outcomes") or "[]")
+            prices = [float(p) for p in json.loads(market.get("outcomePrices") or "[]")]
+        except (TypeError, ValueError):
+            continue
+        if len(outcomes) != len(prices) or not prices or max(prices) < 0.99:
+            continue
+        winner = norm_team(outcomes[int(np.argmax(prices))])
+        won = _settlement_winner(prediction, winner, True)
+        if won is not None:
+            return won, "polymarket_settlement", {
+                "slug": slug, "winner": outcomes[int(np.argmax(prices))],
+                "outcome_prices": prices, "market_source": source,
+                "uma_status": market.get("umaResolutionStatus")}
     return None
 
 
@@ -466,10 +724,15 @@ def _insert_outcome(conn, game_id, game_start_ts, status, blue_win, source, evid
          Json(evidence or {})))
 
 
-def resolve_outcomes(conn, game_id=None, winner=None):
+def resolve_outcomes(conn, game_id=None, winner=None, exchange=True):
+    """Attach outcomes to every pending forecast attempt.
+
+    Outcomes belong to a game, not to a protocol, so rolled-over ledgers keep
+    resolving and stay scoreable (``score(..., protocol_id=...)``).
+    """
     protocol = active_protocol(conn)
-    params = [protocol["protocol_id"]]
-    where = "p.protocol_id=%s AND o.game_id IS NULL"
+    params = []
+    where = "o.game_id IS NULL"
     if game_id is not None:
         where += " AND p.game_id=%s"
         params.append(str(game_id))
@@ -486,20 +749,28 @@ def resolve_outcomes(conn, game_id=None, winner=None):
     resolved = voided = 0
     for gid, attempts in by_game.items():
         latest_start = max(r["game_start_ts"] for r in attempts)
+        # Starts within START_JITTER_S of the latest are the same attempt seen
+        # with slightly different opening frames; only earlier ones are remakes.
+        same_attempt = [r for r in attempts
+                        if latest_start - r["game_start_ts"] <= START_JITTER_S]
         for row in attempts:
-            if row["game_start_ts"] != latest_start:
+            if row not in same_attempt:
                 _insert_outcome(conn, gid, row["game_start_ts"], "void", None,
                                 "remake", {"superseded_by_start_ts": latest_start})
                 voided += 1
-                continue
-            if winner is not None:
-                blue_win = 1 if winner == "blue" else 0
-                found = (blue_win, "manual", {"winner_side": winner})
-            else:
-                found = _automatic_outcome(conn, row)
-            if found:
+        latest = next(r for r in attempts if r["game_start_ts"] == latest_start)
+        if winner is not None:
+            blue_win = 1 if winner == "blue" else 0
+            found = (blue_win, "manual", {"winner_side": winner})
+        else:
+            found = _automatic_outcome(conn, latest, exchange=exchange)
+        if found:
+            for row in same_attempt:
+                evidence = dict(found[2] or {})
+                if row["game_start_ts"] != latest_start:
+                    evidence["canonical_start_ts"] = latest_start
                 _insert_outcome(conn, gid, row["game_start_ts"], "resolved",
-                                found[0], found[1], found[2])
+                                found[0], found[1], evidence)
                 resolved += 1
     conn.commit()
     return {"resolved": resolved, "voided": voided, "pending": len(pending),
@@ -549,22 +820,85 @@ def _shadow_summary(p, y, gids, t_min, bootstrap, seed):
     return out
 
 
-def _score_platforms(rows, bootstrap=5000):
+def _within_lead(row, platform, max_lead_s):
+    if max_lead_s is None:
+        return True
+    lead = row.get(platform + "_lead_s")
+    return lead is not None and float(lead) <= float(max_lead_s)
+
+
+def _market_event_ok(row, platform):
+    """False when the row's quote came from a market scheduled far from the
+    game (another meeting of one of the teams; pre-v11 single-team matching).
+    Such quotes are not this game's market and are excluded from every cohort."""
+    from . import live
+    markets = row.get("markets") or {}
+    detail = (markets.get(platform) or {}).get("detail") or {}
+    start = row.get("game_start_ts")
+    for d in detail.values():
+        if not isinstance(d, dict):
+            continue
+        if platform == "kalshi" and d.get("ticker") and not live.ticker_offset_ok(d["ticker"], start):
+            return False
+        if platform == "polymarket" and d.get("slug") and not _slug_date_ok(d["slug"], start):
+            return False
+    return True
+
+
+def _eligible_market_rows(rows, platform, max_lead_s):
+    return [r for r in rows if r.get(platform + "_p") is not None
+            and _market_event_ok(r, platform)
+            and _within_lead(r, platform, max_lead_s)]
+
+
+def _score_platforms(rows, bootstrap=5000, max_lead_s=MAX_MARKET_LEAD_S):
+    """Per-platform scores.  The primary cohort keeps only rows whose market
+    quote leads the model's frame by at most ``max_lead_s``; the same summary
+    over every quoted row is attached as ``all_leads`` for reference."""
     platforms = {}
     for i, platform in enumerate(("polymarket", "kalshi")):
         market_key = platform + "_p"
         blend_key = platform + "_blend_p"
-        market_rows = [r for r in rows if r.get(market_key) is not None]
-        blend_rows = [r for r in market_rows if r.get(blend_key) is not None]
-        cohort = blend_rows or market_rows
+        quoted_rows = _eligible_market_rows(rows, platform, max_lead_s=None)
+        cohort = _eligible_market_rows(quoted_rows, platform, max_lead_s)
+        excluded = len(quoted_rows) - len(cohort)
+        coverage = {
+            "resolved_model_rows": len(rows), "valid_quote_rows": len(quoted_rows),
+            "eligible_quote_rows": len(cohort),
+            "quote_row_fraction": len(quoted_rows) / len(rows) if rows else 0.0,
+            "eligible_row_fraction": len(cohort) / len(rows) if rows else 0.0,
+            "eligible_games_needed": max(0, CONFIRMATORY_GAMES - len({
+                (r["game_id"], r["game_start_ts"]) for r in cohort})),
+        }
+        timings = [(r.get("state") or {}).get("capture_timing", {}) for r in rows]
+        for field in ("upstream_feed_age_s", "processing_after_feed_s"):
+            values = [v[field] for v in timings if v.get(field) is not None]
+            coverage["median_" + field] = float(np.median(values)) if values else None
         if not cohort:
             platforms[platform] = {
-                "games": 0, "states": 0, "confirmatory_ready": False}
+                "games": 0, "states": 0, "confirmatory_ready": False,
+                "max_market_lead_s": max_lead_s,
+                "coverage": coverage,
+                "excluded_lead_rows": excluded}
+            if max_lead_s is not None and quoted_rows:
+                platforms[platform]["all_leads"] = _score_platforms(
+                    quoted_rows, min(bootstrap, 2000), max_lead_s=None)[platform]
             continue
         market = np.asarray([float(r[market_key]) for r in cohort])
         model = np.asarray([float(r["model_p"]) for r in cohort])
-        blend = (np.asarray([float(r[blend_key]) for r in cohort])
-                 if blend_rows else None)
+        forecasts, sources = [], set()
+        for row in cohort:
+            prediction = row.get("recommended_p")
+            source = row.get("recommended_source")
+            if prediction is None:
+                prediction = row.get(blend_key)
+                source = "blend" if prediction is not None else "model"
+            elif source is None:
+                source = "blend" if row.get(blend_key) is not None else "model"
+            forecasts.append(float(row["model_p"] if prediction is None else prediction))
+            sources.add("model" if source == "model" else "blend")
+        forecast = np.asarray(forecasts)
+        forecast_name = next(iter(sources)) if len(sources) == 1 else "recommended"
         y = np.asarray([float(r["blue_win"]) for r in cohort])
         gids = np.asarray(["%s:%s" % (r["game_id"], r["game_start_ts"])
                            for r in cohort])
@@ -575,11 +909,9 @@ def _score_platforms(rows, bootstrap=5000):
             "model": _shadow_summary(model, y, gids, t_min,
                                      min(bootstrap, 2000), seed=121 + i),
         }
-        if blend is not None:
-            summaries["blend"] = _shadow_summary(
-                blend, y, gids, t_min, min(bootstrap, 2000), seed=101 + i)
-        forecast_name = "blend" if blend is not None else "model"
-        forecast = blend if blend is not None else model
+        if forecast_name != "model":
+            summaries[forecast_name] = _shadow_summary(
+                forecast, y, gids, t_min, min(bootstrap, 2000), seed=101 + i)
         paired = _paired_market_improvement(
             market, forecast, y, gids, bootstrap, seed=131 + i)
         paired["forecast"] = forecast_name
@@ -590,11 +922,17 @@ def _score_platforms(rows, bootstrap=5000):
             "games": int(games), "states": len(cohort), "scores": summaries,
             "paired": paired, "confirmatory_target_games": CONFIRMATORY_GAMES,
             "confirmatory_ready": games >= CONFIRMATORY_GAMES,
+            "max_market_lead_s": max_lead_s,
+            "coverage": coverage,
+            "excluded_lead_rows": excluded,
             "median_market_lead_s": float(np.median([
                 r[platform + "_lead_s"] for r in cohort
                 if r.get(platform + "_lead_s") is not None]))
                 if any(r.get(platform + "_lead_s") is not None for r in cohort) else None,
         }
+        if max_lead_s is not None and excluded:
+            platforms[platform]["all_leads"] = _score_platforms(
+                quoted_rows, min(bootstrap, 2000), max_lead_s=None)[platform]
     return platforms
 
 
@@ -614,9 +952,10 @@ def _version_key(row):
         str(row.get("blend_sha256") or "none")[:12])
 
 
-def score_rows(rows, bootstrap=5000):
+def score_rows(rows, bootstrap=5000, max_lead_s=MAX_MARKET_LEAD_S):
     result = {"resolved_rows": len(rows),
-              "platforms": _score_platforms(rows, bootstrap)}
+              "max_market_lead_s": max_lead_s,
+              "platforms": _score_platforms(rows, bootstrap, max_lead_s)}
     versions = {}
     for row in rows:
         key = _version_key(row)
@@ -633,12 +972,13 @@ def score_rows(rows, bootstrap=5000):
             "stack_sha256": sample.get("stack_sha256"),
             "live_blend_w_gam": sample.get("live_blend_w_gam"),
             "code_revision": sample.get("code_revision"),
-            "platforms": _score_platforms(cohort, min(bootstrap, 2000)),
+            "platforms": _score_platforms(cohort, min(bootstrap, 2000), max_lead_s),
         }
     return result
 
 
-def _freeze_confirmatory_games(conn, protocol_id):
+def _freeze_confirmatory_games(conn, protocol_id, rows, max_lead_s=MAX_MARKET_LEAD_S):
+    """Freeze first eligible games from the same ordered rows used for scoring."""
     frozen = {}
     for platform in ("polymarket", "kalshi"):
         existing = conn.execute(
@@ -648,17 +988,9 @@ def _freeze_confirmatory_games(conn, protocol_id):
         if existing:
             frozen[platform] = [(r["game_id"], r["game_start_ts"]) for r in existing]
             continue
-        market_col = platform + "_p"
-        games = conn.execute(
-            """SELECT p.game_id, p.game_start_ts, MIN(p.captured_at) AS first_capture
-               FROM shadow_predictions p JOIN shadow_outcomes o
-                 USING (game_id, game_start_ts)
-               WHERE p.protocol_id=%%s AND o.status='resolved'
-                 AND p.%s IS NOT NULL
-                 AND p.captured_at < o.recorded_at
-               GROUP BY p.game_id, p.game_start_ts
-               ORDER BY first_capture, p.game_id, p.game_start_ts""" %
-            market_col, (protocol_id,)).fetchall()
+        games = list(dict.fromkeys(
+            (r["game_id"], r["game_start_ts"])
+            for r in _eligible_market_rows(rows, platform, max_lead_s)))
         if len(games) < CONFIRMATORY_GAMES:
             frozen[platform] = []
             continue
@@ -668,47 +1000,142 @@ def _freeze_confirmatory_games(conn, protocol_id):
                 """INSERT INTO shadow_confirmatory_games
                        (protocol_id, platform, ordinal, game_id, game_start_ts)
                    VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
-                [(protocol_id, platform, i + 1, r["game_id"], r["game_start_ts"])
-                 for i, r in enumerate(chosen)], returning=False)
-        frozen[platform] = [(r["game_id"], r["game_start_ts"]) for r in chosen]
+                [(protocol_id, platform, i + 1, gid, start)
+                 for i, (gid, start) in enumerate(chosen)], returning=False)
+        frozen[platform] = chosen
         log.info("froze %s confirmatory cohort at %d games", platform, len(chosen))
     conn.commit()
     return frozen
 
 
-def score(conn, bootstrap=5000, output_path=RESULT_PATH):
-    protocol = active_protocol(conn)
-    frozen = _freeze_confirmatory_games(conn, protocol["protocol_id"])
+def _protocol_by_id(conn, protocol_id):
+    if protocol_id is None:
+        return active_protocol(conn)
+    row = conn.execute(
+        "SELECT protocol_id, created_at, config FROM shadow_protocols WHERE protocol_id=%s",
+        (protocol_id,)).fetchone()
+    if not row:
+        raise ValueError("unknown shadow protocol %s" % protocol_id)
+    return dict(row)
+
+
+def _expose_resolved_history(conn, protocol, scored_rows):
+    """Adopt the resolved ledger before a market-shadow score is published.
+
+    Existing reports predate the shared inventory. Conservatively adopt all
+    resolved forecast history across protocols on the next ordinary score pass,
+    including frames without valid market quotes. No forecast or legacy
+    evaluation registry is rewritten, and exposure failure prevents publication.
+    """
+    from . import wpexposure
+    history = conn.execute("""SELECT DISTINCT p.game_id,p.game_start_ts
+        FROM shadow_predictions p JOIN shadow_outcomes o USING(game_id,game_start_ts)
+        WHERE o.status='resolved' AND o.blue_win IN (0,1)
+          AND p.captured_at < o.recorded_at
+        ORDER BY p.game_id,p.game_start_ts""").fetchall()
+    resolved = {(str(r["game_id"]), int(r["game_start_ts"])) for r in history}
+    resolved.update((str(r["game_id"]), int(r["game_start_ts"])) for r in scored_rows
+                    if r.get("blue_win") in (0, 1))
+    if not resolved:
+        return {"canonical_games_added": 0, "unlinked_games_added": 0,
+                "resolved_attempts_adopted": 0, "adoption_scope": "all_resolved_shadow_protocols"}
+    resolved = sorted(resolved)
+    feed_ids = [game for game, _ in resolved]
+    mapping = ({str(r["esports_game_id"]): r["golgg_game_id"] for r in conn.execute(
+        "SELECT esports_game_id,golgg_game_id FROM feed_games WHERE esports_game_id=ANY(%s)",
+        (sorted(set(feed_ids)),)).fetchall()} if _table_exists(conn, "feed_games") else {})
+    protocol_hash = wpexposure.digest({"kind": "market_shadow_exposure_v1",
+        "protocol_id": protocol["protocol_id"], "config": protocol.get("config") or {},
+        "adoption_scope": "all_resolved_shadow_protocols"})
+    exposure = wpexposure.expose(
+        [mapping.get(game) for game, _ in resolved],
+        [dt.datetime.fromtimestamp(start, dt.timezone.utc).date().isoformat() for _, start in resolved],
+        "market-shadow:" + protocol["protocol_id"], protocol_hash, feed_game_ids=feed_ids)
+    return dict(exposure, resolved_attempts_adopted=len(resolved),
+                adoption_scope="all_resolved_shadow_protocols", protocol_sha256=protocol_hash)
+
+
+def _refresh_candidate_scores(conn, bootstrap, output_path):
+    """Refresh a separate candidate report after preserving the incumbent one."""
+    from . import wpcandidate
+    import tempfile
+    try:
+        result = wpcandidate.score(conn, bootstrap=bootstrap)
+        if output_path:
+            directory = os.path.dirname(os.path.abspath(output_path))
+            os.makedirs(directory, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(prefix=".candidate-score-", dir=directory)
+            try:
+                with os.fdopen(fd, "w") as handle:
+                    json.dump(result, handle, indent=2, sort_keys=True, default=str)
+                    handle.flush(); os.fsync(handle.fileno())
+                os.replace(temporary, output_path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        return {"status": "ok", "candidates": len(result.get("candidates", [])), "output_path": output_path}
+    except wpcandidate.OutcomeExposureError:
+        # Candidate outcome inspection must never be relabeled an optional
+        # diagnostic failure. Its exposure must succeed before it is published.
+        conn.rollback()
+        raise
+    except Exception as exc:
+        conn.rollback()
+        log.exception("candidate score refresh failed; incumbent report preserved")
+        return {"status": "failed", "error": str(exc), "output_path": output_path}
+
+
+def score(conn, bootstrap=5000, output_path=RESULT_PATH, protocol_id=None):
+    """Score one ledger (the active protocol unless ``protocol_id`` names an
+    older one).  The primary lead window comes from the protocol's own config
+    so an older ledger is scored under the rule it was registered with."""
+    protocol = _protocol_by_id(conn, protocol_id)
+    max_lead_s = (protocol.get("config") or {}).get("primary_market_lead_s")
+    if protocol_id is not None and output_path == RESULT_PATH:
+        output_path = None   # never overwrite the active ledger's report
     rows = conn.execute(
         """SELECT p.*, o.blue_win
            FROM shadow_predictions p JOIN shadow_outcomes o
              USING (game_id, game_start_ts)
            WHERE p.protocol_id=%s AND o.status='resolved'
              AND p.captured_at < o.recorded_at
-           ORDER BY p.captured_at""", (protocol["protocol_id"],)).fetchall()
-    result = score_rows([dict(r) for r in rows], bootstrap=bootstrap)
+           ORDER BY p.captured_at, p.game_id, p.game_start_ts""",
+        (protocol["protocol_id"],)).fetchall()
     row_dicts = [dict(r) for r in rows]
+    exposure = _expose_resolved_history(conn, protocol, row_dicts)
+    frozen = _freeze_confirmatory_games(conn, protocol["protocol_id"], row_dicts, max_lead_s)
+    result = score_rows(row_dicts, bootstrap=bootstrap, max_lead_s=max_lead_s)
     for platform, games in frozen.items():
         if not games:
             continue
         keys = set((str(g), int(t)) for g, t in games)
         fixed_rows = [r for r in row_dicts
                       if (str(r["game_id"]), int(r["game_start_ts"])) in keys]
-        fixed = score_rows(fixed_rows, bootstrap=bootstrap)["platforms"][platform]
-        result["platforms"][platform]["confirmatory"] = fixed
-        result["platforms"][platform]["confirmatory_frozen"] = True
+        fixed = score_rows(fixed_rows, bootstrap=bootstrap,
+                           max_lead_s=max_lead_s)["platforms"][platform]
+        # Keep existing membership unchanged, but invalid old quotes cannot
+        # turn a cohort with fewer eligible games into a confirmatory result.
+        if fixed["confirmatory_ready"]:
+            result["platforms"][platform]["confirmatory"] = fixed
+            result["platforms"][platform]["confirmatory_frozen"] = True
     result.update({
         "kind": "prospective_shadow_score_v1", "scored_at": _utc_now(),
         "protocol_id": protocol["protocol_id"], "protocol": protocol["config"],
+        "outcome_exposure": exposure,
     })
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "w") as fh:
-        json.dump(result, fh, indent=2, sort_keys=True, default=str)
+    if output_path:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, "w") as fh:
+            json.dump(result, fh, indent=2, sort_keys=True, default=str)
+    if protocol_id is None:
+        candidate_path = (os.path.join(os.path.dirname(os.path.abspath(output_path)), "shadow_candidate_score.json")
+                          if output_path else None)
+        result["candidate_score_refresh"] = _refresh_candidate_scores(conn, bootstrap, candidate_path)
     return result
 
 
-def status(conn):
-    protocol = active_protocol(conn)
+def status(conn, protocol_id=None):
+    protocol = _protocol_by_id(conn, protocol_id)
     pid = protocol["protocol_id"]
     counts = conn.execute(
         """SELECT COUNT(*) AS rows,
@@ -736,10 +1163,20 @@ def status(conn):
 
 def report_score(result):
     print("prospective shadow protocol", result["protocol_id"])
+    lead = result.get("max_market_lead_s")
+    if lead is not None:
+        print("  primary rows: market lead <= %.0f s over the model's feed frame" % lead)
     for platform in ("polymarket", "kalshi"):
         r = result["platforms"][platform]
+        coverage = r.get("coverage") or {}
+        if coverage:
+            print("  %-11s eligible coverage %d/%d model rows (%.1f%%); %d games remaining" % (
+                platform, coverage["eligible_quote_rows"], coverage["resolved_model_rows"],
+                100 * coverage["eligible_row_fraction"], coverage["eligible_games_needed"]))
         if not r.get("games"):
-            print("  %-11s no resolved complete-case forecasts yet" % platform)
+            print("  %-11s no resolved complete-case forecasts yet%s" % (
+                platform, (" (%d quoted rows beyond the lead window)" % r["excluded_lead_rows"])
+                if r.get("excluded_lead_rows") else ""))
             continue
         shown = r.get("confirmatory") or r
         scores = shown["scores"]
@@ -757,6 +1194,13 @@ def report_score(result):
         else:
             print("              descriptive only: %d/%d preregistered games" %
                   (r["games"], r["confirmatory_target_games"]))
+        every = r.get("all_leads")
+        if every and every.get("games"):
+            print("              all leads: %d games/%d states market %.5f model %.5f "
+                  "(%d rows beyond the window)" %
+                  (every["games"], every["states"],
+                   every["scores"]["market"]["brier_game"],
+                   every["scores"]["model"]["brier_game"], r.get("excluded_lead_rows", 0)))
 
 
 def report_status(result):
@@ -767,8 +1211,44 @@ def report_status(result):
     print("  first=%s last=%s" % (result["first_capture"], result["last_capture"]))
 
 
+def _start_maintenance():
+    """Resolution/scoring may use the network; never stall frame collection."""
+    global _MAINTENANCE_THREAD
+    if _MAINTENANCE_THREAD is not None and _MAINTENANCE_THREAD.is_alive():
+        return False
+
+    def maintain():
+        from . import db, live
+        own = None
+        try:
+            own = db.connect()
+            with live.request_deadline(30):
+                resolved = resolve_outcomes(own)
+            # Coverage updates even when all currently observed games resolved
+            # on an earlier pass and this maintenance pass adds no outcomes.
+            score(own)
+            log.info("shadow maintenance resolved=%d", resolved["resolved"])
+        except Exception:
+            if own is not None:
+                own.rollback()
+            log.exception("shadow maintenance failed; capture continues")
+        finally:
+            if own is not None:
+                own.close()
+    _MAINTENANCE_THREAD = threading.Thread(target=maintain, daemon=True)
+    _MAINTENANCE_THREAD.start()
+    return True
+
+
 def record(conn, once=False, interval_s=DEFAULT_INTERVAL_S):
+    global _RECORDER_SOURCE_REVISION
+    _RECORDER_SOURCE_REVISION = _code_revision()
     protocol = active_protocol(conn)
+    from . import wpcandidate
+    try:
+        wpcandidate.start_worker()
+    except Exception:
+        log.exception("optional candidate startup failed; incumbent capture continues")
     log.info("prospective shadow recorder starting protocol=%s cadence=%ds",
              protocol["protocol_id"], interval_s)
     last_resolve = 0.0
@@ -780,12 +1260,19 @@ def record(conn, once=False, interval_s=DEFAULT_INTERVAL_S):
                 log.info("shadow pass live=%d captured=%d",
                          result["live_games"], result["captured"])
             if time.time() - last_resolve >= 300 or once:
-                resolved = resolve_outcomes(conn)
-                if resolved["resolved"] or once:
+                if once:
+                    resolve_outcomes(conn)
                     score(conn)
+                else:
+                    _start_maintenance()
                 last_resolve = time.time()
         except KeyboardInterrupt:
             raise
+        except (urllib.error.URLError, socket.timeout, ConnectionError, TimeoutError) as exc:
+            # Transient network trouble (DNS, TLS handshake, timeouts): one
+            # line, no traceback; the next pass retries.
+            conn.rollback()
+            log.warning("shadow recorder pass skipped: network error %s", exc)
         except Exception:
             conn.rollback()
             log.exception("shadow recorder iteration failed; continuing")

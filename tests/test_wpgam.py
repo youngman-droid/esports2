@@ -5,7 +5,7 @@ from unittest import mock
 
 import numpy as np
 
-from lol_ticker import wpgam, wpx
+from lol_ticker import wpaudit, wpgam, wpx
 
 
 class TimeBasisTests(unittest.TestCase):
@@ -51,6 +51,29 @@ class TimeBasisTests(unittest.TestCase):
 
 
 class FeatureContractTests(unittest.TestCase):
+    def test_rare_discrete_events_survive_scaling_and_fit(self):
+        names = wpgam.PRIOR_INPUTS + wpgam.STATE_FEATURES
+        raw = np.zeros((2000, len(names)))
+        y = (np.arange(2000) % 2).astype(float)
+        for name in ("d_elder", "elder_active"):
+            raw[-4:, names.index(name)] = [-1, 1, -1, 1]
+        model = wpgam.fit_state_model(raw, y, np.arange(len(y)),
+                                      np.full(len(y), 35.0))
+        probe = np.zeros((3, len(names)))
+        for name in ("d_elder", "elder_active"):
+            j = names.index(name)
+            self.assertLess(model["lo"][j], 0)
+            self.assertGreater(model["hi"][j], 0)
+            probe[:, j] = [-1, 0, 1]
+        p = wpgam.predict_state(model, probe, [35, 35, 35])
+        self.assertTrue(np.all(np.diff(p) > 0.001))
+
+    def test_no_observed_variation_is_erased_by_percentile_clipping(self):
+        raw = np.zeros((1000, 1)); raw[-1] = 3.0
+        mean, std, lo, hi = wpgam._scale_fit(raw)
+        self.assertGreater(hi[0], lo[0])
+        self.assertTrue(np.isfinite(wpgam._scale_apply(raw, mean, std, lo, hi)).all())
+
     def test_historical_and_live_contract_match(self):
         state = {
             "t_min": 18.0, "gold_blue": 32000, "gold_red": 30500,
@@ -91,6 +114,13 @@ class FeatureContractTests(unittest.TestCase):
 
 
 class ArtifactTests(unittest.TestCase):
+    def setUp(self):
+        # These tests exercise the incumbent/legacy stack independently of
+        # whichever production bundle is active on the developer's machine.
+        pointer = mock.patch("lol_ticker.wpcombined_prod.load_active", return_value=None)
+        pointer.start()
+        self.addCleanup(pointer.stop)
+
     def _model(self):
         npre = len(wpgam.PREGAME_FEATURES)
         n_inputs = len(wpgam.PRIOR_INPUTS)
@@ -140,11 +170,66 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(out["reliability"], "reduced")
             self.assertIn("hp_unavailable", out["input_warnings"])
 
+    def test_player_gold_is_monotone_at_clipping_boundaries(self):
+        rng = np.random.default_rng(904)
+        model = self._model()
+        state = model["state"]
+        state.update(cal_slope=0.9, cal_intercept=0.)
+        for i, name in enumerate(state["feature_names"]):
+            if name in wpgam.MONOTONE_FEATURES:
+                state["theta"][i+1] = rng.uniform(0, 2, len(wpgam.TIME_KNOTS))
+        j = list(state["feature_names"]).index("gold_rel")
+        state["lo"][j], state["hi"][j] = -.13, .14
+        raw = rng.normal(size=(500, len(state["feature_names"])))
+        gold_j = list(state["feature_names"]).index("gold_k")
+        total = np.full(len(raw), 10.)
+        raw[:, j] = raw[:, gold_j] / total
+        audit = wpaudit.audit_gold(state, raw, rng.uniform(0, 80, len(raw)), total)
+        self.assertTrue(audit["passed"], audit)
+        # The recorded red-support failure: other roles must stay constant.
+        state_input = dict(t_min=2., gold_blue=2865., gold_red=4084.,
+                           gold_diff_k=-1.219, gold_diff_prev_k=0.,
+                           gold_role=[-.318, -.172, -.096, .094, -.727])
+        model["kind"] = wpgam.MODEL_KIND
+        before = wpgam.predict_live_model(model, state_input, rounded=False)["p_blue"]
+        changed = dict(state_input, gold_red=5084., gold_diff_k=-2.219,
+                       gold_role=[-.318, -.172, -.096, .094, -1.727])
+        after = wpgam.predict_live_model(model, changed, rounded=False)["p_blue"]
+        self.assertLessEqual(after, before)
+
+    def test_old_artifact_keeps_its_feature_semantics_and_kind(self):
+        model = wpgam.load_model()
+        if model["kind"] != wpgam.LEGACY_MODEL_KIND:
+            self.skipTest("v8 deployment has been replaced")
+        state = dict(t_min=35., gold_blue=55000., gold_red=55000.,
+                     gold_diff_k=0., has_hp=1., drag_blue=4, drag_red=4)
+        out = wpgam.predict_live_model(model, state)
+        self.assertEqual(out["model_kind"], wpgam.LEGACY_MODEL_KIND)
+        raw = wpgam.state_values_from_live(state, wpgam.LEGACY_STATE_FEATURES)
+        self.assertEqual(len(raw), 25)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "legacy.npz")
+            wpgam.save_model(model, path)
+            restored = wpgam.load_model(path)
+            self.assertEqual(restored["kind"], model["kind"])
+            self.assertEqual(wpgam.predict_live(state, path=path)["p_blue"], out["p_blue"])
+
+    def test_series_score_alone_does_not_count_as_a_team_prior(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "model.npz")
+            wpgam.save_model(self._model(), path, {})
+            state = {"t_min": 10, "gold_diff_k": 0, "gold_blue": 20000,
+                     "gold_red": 20000, "series_diff": 0.0}
+            out = wpgam.predict_live(state, path=path)
+            self.assertIn("pregame_priors_unavailable", out["input_warnings"])
+            rated = wpgam.predict_live(dict(state, elo_gg=0.1), path=path)
+            self.assertNotIn("pregame_priors_unavailable", rated["input_warnings"])
+
     def test_production_live_default_uses_blend_base_model(self):
         self.assertEqual(wpx.LIVE_MODEL_PATH, wpgam.MODEL_PATH)
         self.assertEqual(wpx.predict_live.__defaults__[-2], wpgam.MODEL_PATH)
         with np.load(wpx.LIVE_MODEL_PATH, allow_pickle=False) as artifact:
-            self.assertEqual(str(artifact["kind"].item()), wpgam.MODEL_KIND)
+            self.assertIn(str(artifact["kind"].item()), wpgam.SUPPORTED_MODEL_KINDS)
 
     def test_production_live_blend_lies_between_components(self):
         state = {"t_min": 22.0, "gold_diff_k": 2.5, "gold_diff_prev_k": 2.0,
@@ -185,6 +270,62 @@ class ArtifactTests(unittest.TestCase):
 
 
 class TemporalCalibrationTests(unittest.TestCase):
+    def test_insufficient_temporal_history_leaves_calibration_at_identity(self):
+        n = 12
+        names = list(wpx.FEATURE_NAMES)
+        X = np.zeros((n, len(names)))
+        X[:, names.index("bias")] = 1.
+        X[:, names.index("t")] = .5
+        y = (np.arange(n) % 2).astype(float)
+        C = np.full((n, 10), -1, dtype=int)
+        dates = np.array([str(np.datetime64("2025-01-01") + np.timedelta64(i, "D"))
+                          for i in range(n)])
+        for history in (None, dates):
+            with self.subTest(dated=history is not None):
+                result = wpgam.fit_arrays(X, y, np.arange(n), np.full(n, 900.),
+                    np.full(n, -1), C, names, [], dates=history,
+                    pregame_folds=2, champ_state_folds=2)
+            self.assertEqual(result["state"]["cal_intercept"], 0.)
+            self.assertEqual(result["state"]["cal_slope"], 1.)
+            self.assertEqual(result["state"]["calibration_method"],
+                             "identity_insufficient_temporal_data")
+
+    def test_stacked_folds_are_past_only_and_cover_complete_dates(self):
+        dates = np.repeat(np.array([str(np.datetime64("2025-01-01") +
+                                       np.timedelta64(i, "D")) for i in range(80)]), 3)
+        coverage = np.zeros(len(dates), dtype=int)
+        for train, test in wpgam._stack_folds(np.arange(len(dates)), dates=dates):
+            coverage += test
+            if train.any() and test.any():
+                self.assertLess(max(dates[train]), min(dates[test]))
+        np.testing.assert_array_equal(coverage, 1)
+
+    def test_calibration_labels_cannot_change_its_input_logits(self):
+        rng = np.random.default_rng(18)
+        n = 150
+        names = list(wpx.FEATURE_NAMES)
+        X = np.zeros((n, len(names)))
+        X[:, names.index("bias")] = 1.
+        X[:, names.index("t")] = .5
+        X[:, names.index("gold_k")] = rng.normal(size=n)
+        C = np.full((n, 10), -1, dtype=int)
+        C[:, 0] = np.arange(n) % 2
+        y = rng.integers(0, 2, size=n).astype(float)
+        dates = np.array([str(np.datetime64("2025-01-01") + np.timedelta64(i, "D"))
+                          for i in range(n)])
+        logits = []
+        def calibrate(z, *_args):
+            logits.append(z.copy())
+            return .17, .91
+        for labels in (y, np.r_[y[:120], 1 - y[120:]]):
+            with mock.patch.object(wpgam, "_fit_platt_logits", side_effect=calibrate):
+                result = wpgam.fit_arrays(X, labels, np.arange(n), np.full(n, 900.),
+                    np.full(n, -1), C, names, ["Ahri", "Ashe"], dates=dates,
+                    pregame_folds=2, champ_state_folds=2)
+            self.assertEqual(result["state"]["cal_intercept"], .17)
+        self.assertEqual(len(logits), 2)
+        np.testing.assert_allclose(logits[0], logits[1], atol=1e-10, rtol=0)
+
     def test_final_intercept_recenters_fixed_slope(self):
         logits = np.array([-1.0, -0.3, 0.2, 0.8, 1.4])
         y = np.array([0.0, 0.0, 1.0, 1.0, 1.0])

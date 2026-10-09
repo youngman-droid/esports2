@@ -1,65 +1,330 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>LoL Ticker</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#080e1b">
+<title>LoL Ticker · Draft room</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
 <style>
-  body { font-family: -apple-system, Helvetica, Arial, sans-serif; margin: 20px auto;
-         max-width: 1100px; color: #222; }
-  h1 { font-size: 20px; display: inline-block; margin-right: 16px; }
-  #kstatus { padding: 3px 10px; border-radius: 12px; font-size: 13px; color: #fff; }
-  .ok { background: #2e9e44; } .bad { background: #d33; } .unk { background: #999; }
-  input[type=text] { width: 320px; padding: 6px; font-size: 14px; }
-  button { padding: 6px 12px; font-size: 14px; cursor: pointer; }
-  table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13px; }
-  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #ddd; }
-  tr.game:hover { background: #eef; cursor: pointer; }
-  .badge { background: #d33; color: #fff; border-radius: 8px; padding: 1px 6px; font-size: 11px; }
-  .plat-polymarket { color: #1652f0; font-weight: 600; }
-  .plat-kalshi { color: #0aa574; font-weight: 600; }
-  #markets label { display: block; font-size: 13px; margin: 2px 0; }
-  #markets { max-height: 220px; overflow-y: auto; border: 1px solid #ddd;
-             padding: 8px; margin: 10px 0; }
-  #chartbox { position: relative; height: 420px; }
-  .muted { color: #888; font-size: 12px; }
-  #outages { font-size: 13px; color: #b00; }
-  .cols { display: flex; gap: 24px; align-items: flex-start; }
-  .cols > div { flex: 1; }
+
+  :root { color-scheme: dark; --bg:#080e1b; --surface:#0d1525; --card:#172133;
+    --raised:#202c40; --line:#273247; --text:#edf1f8; --muted:#9aa9bf;
+    --blue:#aacaff; --red:#f7a2b4; --green:#6fdbb0; }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  html { scroll-behavior:smooth; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:14px; line-height:1.5; }
+  button,input,select { font:inherit; }
+  button { cursor:pointer; }
+  a { color:var(--blue); text-decoration:none; }
+  button,input,select,summary,a { -webkit-tap-highlight-color:transparent; }
+  :focus-visible { outline:2px solid var(--blue); outline-offset:4px; }
+  button { padding:8px 13px; color:var(--text); background:var(--card); border:1px solid var(--line); border-radius:7px; transition:background .15s,border-color .15s; }
+  button:hover { background:var(--raised); border-color:#536582; }
+  button:disabled { opacity:.4; cursor:default; }
+  input,select { color:var(--text); background:#111b2d; border:1px solid var(--line); border-radius:6px; padding:8px 10px; max-width:100%; }
+  input[type=checkbox] { accent-color:var(--blue); }
+  input[type=text] { width:320px; }
+  input::placeholder { color:#8c9ab0; }
+  label { color:var(--muted); font-size:12px; }
+  h1,h2,h3,p { margin-top:0; }
+  h1 { font-size:28px; letter-spacing:-1px; margin-bottom:4px; line-height:1.2; }
+  h2 { font-size:19px; letter-spacing:-.4px; }
+  h3 { font-size:15px; }
+  .muted { color:var(--muted); font-size:12px; }
+  .app-header { border-bottom:1px solid #1b263a; background:#0b1220; }
+  .header-inner { max-width:1376px; min-height:72px; margin:auto; padding:0 40px; display:flex; align-items:center; gap:52px; }
+  .brand { color:var(--text); font-size:19px; font-weight:750; display:flex; align-items:center; gap:11px; letter-spacing:-.5px; white-space:nowrap; }
+  .brand svg { width:28px; height:28px; color:var(--blue); }
+  .app-nav { display:flex; align-self:stretch; gap:28px; overflow-x:auto; }
+  .app-nav button { border:0; border-bottom:2px solid transparent; border-radius:0; padding:0 1px; background:none; color:var(--muted); font-size:13px; white-space:nowrap; }
+  .app-nav button[aria-selected=true] { color:var(--text); border-bottom-color:var(--blue); }
+  .app-nav button:hover { color:var(--text); }
+  .app-nav .players-link { align-self:center; color:var(--muted); font-size:13px; white-space:nowrap; }
+  .app-nav .players-link:hover { color:var(--text); }
+  .header-status { margin-left:auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+  #kstatus,#recstatus { display:inline-flex; align-items:center; gap:7px; font-size:10px; border-radius:5px; padding:4px 7px; }
+  #kstatus::before,#recstatus::before { content:""; width:5px; height:5px; background:currentColor; border-radius:50%; flex-shrink:0; }
+  .ok { background:#102b27; color:var(--green); }
+  .bad { background:#34202b; color:var(--red); }
+  .unk { background:#202a3c; color:var(--muted); }
+  main { max-width:1376px; margin:auto; padding:30px 40px 20px; }
+  .workspace-heading { display:flex; align-items:center; justify-content:space-between; gap:20px; margin-bottom:25px; }
+  .workspace-heading p { color:var(--muted); margin:7px 0 0; font-size:13px; }
+  .eyebrow { color:#8495ae; font-size:10px; letter-spacing:1.7px; font-weight:650; margin-bottom:8px; }
+  .secondary-button { background:transparent; font-size:12px; }
+  .browser-panel { border:1px solid var(--line); background:#0d1626; border-radius:9px; margin-bottom:24px; padding:12px 16px; }
+  .browser-toolbar { display:flex; align-items:center; gap:18px; }
+  .browser-toolbar label { display:flex; gap:9px; align-items:center; white-space:nowrap; font-size:11px; }
+  .browser-toolbar select { padding:6px 28px 6px 8px; font-size:12px; background:#111c2d; }
+  .tournament-field { flex:1; min-width:0; }
+  #pk-tr { width:100%; min-width:100px; }
+  #browse-toggle { white-space:nowrap; font-size:12px; background:#1a2a43; border-color:#314765; }
+  #pk-meta:not(:empty) { margin-top:10px; }
+  #pk-meta { color:var(--muted); }
+  #pk-games { overflow:auto; max-height:290px; margin-top:12px; border-top:1px solid var(--line); }
+  #sel-banner { margin-top:12px; padding:9px 12px; border-radius:5px; background:#15263e; border-left:2px solid var(--blue); font-size:12px; color:#c3d3e9; }
+  .draft-board { background:#0a1120; border:1px solid #273247; border-radius:12px; padding:21px 26px 18px; }
+  .board-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:24px; }
+  .board-label { font-size:10px; font-weight:700; letter-spacing:1.5px; display:flex; gap:8px; align-items:center; color:#b2bfd2; }
+  .board-label svg { width:15px; height:15px; }
+  #draft-context { font-size:11px; color:var(--muted); text-align:right; }
+  .draft-columns { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:38px; }
+  .team-panel { min-width:0; --team:var(--blue); }
+  .team-panel.red { --team:var(--red); }
+  .team-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:15px; }
+  .team-heading h2 { font-size:25px; margin:0; font-weight:750; letter-spacing:-.7px; line-height:1.3; overflow-wrap:anywhere; }
+  .side-badge { font-size:10px; color:var(--team); background:#1c2b43; border:1px solid #2d405e; padding:3px 8px; border-radius:5px; white-space:nowrap; }
+  .red .side-badge { background:#312331; border-color:#473044; }
+  .team-stats { display:grid; grid-template-columns:1fr 1fr; gap:16px; padding-bottom:16px; border-bottom:1px solid var(--line); margin-bottom:13px; }
+  .team-stats span { display:block; font-size:10px; color:var(--muted); margin-bottom:2px; }
+  .team-stats strong { font-size:29px; line-height:1.15; color:var(--team); letter-spacing:-.9px; font-variant-numeric:tabular-nums; }
+  .team-stats .prior-stat strong { font-size:23px; color:#a8b6cd; }
+  .draft-section-label { color:#bdc7d9; font-size:10px; font-weight:600; margin:13px 0 7px; }
+  .ban-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; }
+  .ban-card { position:relative; min-width:0; min-height:103px; padding:9px 7px 7px; border:1px solid #29354a; background:#1d273a; border-radius:7px; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  .ban-card .champion-portrait { width:37px; height:37px; margin-bottom:5px; border-radius:4px; }
+  .champion-portrait { flex-shrink:0; object-fit:cover; background:#101929; color:#8d9bb3; display:flex; align-items:center; justify-content:center; font-size:18px; overflow:hidden; }
+  .champion-portrait img { display:block; width:100%; height:100%; object-fit:cover; }
+  .ban-card.has-champion .champion-portrait::after { content:""; position:absolute; width:46px; height:1px; background:#d8e1f2; transform:rotate(-45deg); top:27px; }
+  .ban-caption { color:var(--muted); font-size:8px; letter-spacing:.4px; text-transform:uppercase; margin-top:3px; }
+  .ban-card input { width:100%; min-width:0; padding:2px 0; font-size:10px; text-align:center; border:0; border-radius:2px; background:transparent; font-weight:600; }
+  .ban-card input::placeholder { color:#c1cad9; font-weight:400; }
+  .ban-card input:focus { background:#111b2d; }
+  .pick-list { display:flex; flex-direction:column; gap:8px; }
+  .pick-card { display:flex; align-items:center; gap:10px; min-height:60px; padding:8px 10px; border:1px solid #2a374c; background:#202b3e; border-radius:8px; min-width:0; }
+  .pick-card.has-champion { background:#172339; }
+  .pick-card .champion-portrait { width:41px; height:41px; border-radius:5px; }
+  .pick-identity { flex:1; min-width:0; }
+  input.pick-input { display:block; width:100%; min-width:0; padding:0; background:transparent; border:0; font-size:14px; font-weight:650; line-height:1.5; }
+  input.pick-input::placeholder { color:#c0cada; }
+  .pick-role { padding:0; background:transparent; border:0; font-size:10px; color:#9aaac2; width:80px; }
+  .pick-effect { margin-left:auto; white-space:nowrap; font-size:10px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .pick-effect.positive { color:var(--green); }
+  .pick-effect.negative { color:var(--red); }
+  .pick-tag { flex-shrink:0; min-width:27px; border-radius:5px; padding:3px 5px; text-align:center; background:#091222; color:var(--team); font-size:10px; font-weight:700; }
+  .ban-card.is-active,.pick-card.is-active { border-color:var(--team); }
+  .draft-probability { display:flex; height:3px; border-radius:3px; overflow:hidden; margin-top:22px; background:var(--red); }
+  #sim-prob-fill { width:50%; background:var(--blue); transition:width .25s; }
+  .replay-bar { padding-top:16px; display:flex; justify-content:space-between; align-items:center; gap:16px; }
+  .replay-caption { display:flex; align-items:center; gap:12px; min-width:0; }
+  #sim-progress-count { font-size:15px; font-weight:750; letter-spacing:-.2px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  #sim-turn-label { color:#b5c1d5; font-size:12px; }
+  .replay-controls { display:flex; gap:5px; align-items:center; flex-shrink:0; }
+  .replay-controls button { height:30px; min-width:30px; padding:4px 7px; font-size:12px; background:#111b2e; }
+  #sim-replay-toggle { color:#101a2a; background:#b7d1f7; border-color:#b7d1f7; min-width:70px; font-weight:650; }
+  .replay-track { background:#243048; height:2px; border-radius:2px; margin-top:15px; overflow:hidden; }
+  #sim-progress-fill { background:#829bbf; width:0%; height:100%; transition:width .2s; }
+  .board-footer { display:flex; justify-content:space-between; gap:15px; font-size:10px; color:#8392a9; margin-top:9px; }
+  .draft-settings { display:flex; justify-content:space-between; align-items:center; gap:16px; margin:18px 0; flex-wrap:wrap; }
+  .draft-settings .settings-fields { display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
+  .draft-settings label { display:flex; align-items:center; gap:8px; font-size:11px; }
+  .draft-settings input,.draft-settings select { padding:5px 7px; font-size:11px; }
+  #sim-pre { width:60px; }
+  #sim-summary { color:var(--blue); font-size:12px; }
+  .model-details { border-top:1px solid var(--line); padding:14px 0; }
+  .model-details summary { cursor:pointer; color:var(--muted); font-size:12px; }
+  .model-details p { margin:12px 0; max-width:880px; }
+  #sim-log { max-height:270px; overflow:auto; line-height:1.9; }
+  .view-panel { min-width:0; }
+  .view-panel>h2 { margin-bottom:8px; }
+  .view-panel>p { margin-bottom:20px; }
+  #view-live>div:first-child { background:var(--surface); padding:22px !important; border-color:var(--line) !important; border-radius:10px !important; }
+  #lv-game { margin:0 8px 14px 0; }
+  #lv-state { padding:10px; line-height:1.8; border:1px solid var(--line); border-radius:6px; }
+  #lv-box { margin-top:15px !important; }
+  #lv-box>div:has(>canvas) { height:260px !important; }
+  #lv-totals { padding:10px 0; }
+  #lv-sb-blue,#lv-sb-red { overflow-x:auto; }
+  #lv-sb-blue table,#lv-sb-red table { min-width:660px; }
+  #lv-sb-blue th,#lv-sb-red th,#lv-sb-blue td,#lv-sb-red td { padding:7px 4px; font-size:10px; }
+  .analysis-nav { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:18px; }
+  .analysis-nav a { padding:7px 11px; border:1px solid var(--line); border-radius:6px; font-size:12px; color:#c1cce0; }
+  .analysis-card { margin-bottom:24px; padding:22px; border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow-x:auto; scroll-margin-top:20px; }
+  .analysis-card>h2:first-child { margin-top:0 !important; font-size:19px !important; }
+  .analysis-card p { line-height:1.8; }
+  .analysis-card button,.analysis-card select,.analysis-card input { margin-bottom:5px; }
+  #chartbox { position:relative; height:420px; margin-top:12px; background:var(--surface); border:1px solid var(--line); padding:15px; border-radius:8px; }
+  #chartbox::before { content:"Select a game and choose its markets to compare odds over time"; position:absolute; inset:45% 25px auto; text-align:center; color:var(--muted); font-size:12px; pointer-events:none; }
+  #chartbox.has-data::before { display:none; }
+  .cols { display:flex; gap:24px; align-items:flex-start; }
+  .cols>div { flex:1; min-width:0; overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; margin-top:10px; font-size:12px; }
+  th,td { padding:9px 8px; text-align:left; border-bottom:1px solid #253047; }
+  th { color:#97a8c2; font-size:10px; font-weight:600; white-space:nowrap; }
+  tr.game:hover { background:#1b2c46; cursor:pointer; }
+  tr.game:focus-visible { outline-offset:-2px; }
+  tr.game[aria-selected=true] { background:#203653; }
+  .badge { background:#3a2232; color:var(--red); border-radius:4px; padding:2px 6px; font-size:10px; }
+  .plat-polymarket { color:var(--blue); font-weight:600; }
+  .plat-kalshi { color:var(--green); font-weight:600; }
+  #markets { max-height:240px; overflow-y:auto; border:1px solid var(--line); padding:10px; margin:10px 0; border-radius:6px; }
+  #markets label { display:block; font-size:12px; margin:5px 0; }
+  #outages { color:var(--red); font-size:12px; }
+  .app-footer { border-top:1px solid #1b263a; margin-top:30px; padding:17px 0 5px; display:flex; justify-content:space-between; color:#8291a8; font-size:10px; }
+  .empty-hint { padding:26px; border:1px dashed var(--line); border-radius:8px; color:var(--muted); text-align:center; font-size:12px; margin-top:12px; }
+  @media(min-width:1500px) { .draft-board { padding:26px 30px; } .pick-card { min-height:65px; } }
+  @media(max-width:1100px) { .header-inner { gap:30px; padding:0 24px; } main { padding:25px 24px; } .header-status { max-width:180px; } .app-nav { gap:20px; } .browser-toolbar { gap:10px; } .browser-toolbar label { gap:5px; } .draft-columns { gap:24px; } .draft-board { padding:20px; } }
+  @media(max-width:800px) { .header-inner { flex-wrap:wrap; gap:0; padding-top:14px; } .brand { font-size:18px; } .app-nav { order:3; width:100%; gap:26px; height:47px; margin-top:7px; } .header-status { max-width:none; } .browser-toolbar { flex-wrap:wrap; } .tournament-field { flex-basis:65%; } .browser-toolbar label:first-child,.browser-toolbar label:nth-child(2) { flex:1; } .browser-toolbar select { flex:1; } .draft-columns { gap:18px; } .team-heading h2 { font-size:20px; } .ban-grid { gap:4px; } .ban-card { padding:7px 3px; min-height:98px; } .ban-card input { font-size:9px; } .pick-effect { display:none; } .team-stats strong { font-size:26px; } .cols { flex-direction:column; } .cols>div { width:100%; } .replay-caption { flex-wrap:wrap; gap:3px 9px; } .board-footer { font-size:9px; } }
+  @media(max-width:600px) { .header-inner { padding-left:18px; padding-right:18px; } main { padding:22px 14px; } .brand svg { width:23px; height:23px; } #recstatus { max-width:150px; font-size:8px; } #kstatus { font-size:9px; } h1 { font-size:25px; } .workspace-heading { margin-bottom:20px; gap:8px; } .workspace-heading p { max-width:250px; font-size:12px; } .workspace-heading button { font-size:11px; padding:7px 10px; white-space:nowrap; } .browser-panel { padding:12px; } .browser-toolbar label { font-size:10px; } .browser-toolbar select { font-size:11px; } .draft-board { padding:17px 13px; border-radius:9px; } .draft-columns { grid-template-columns:1fr; gap:26px; } .team-heading h2 { font-size:24px; } .team-stats { padding-bottom:12px; } .team-stats strong { font-size:29px; } .ban-grid { gap:7px; } .ban-card input { font-size:10px; } .pick-effect { display:block; } .replay-bar { align-items:flex-start; flex-direction:column; gap:12px; } .replay-controls { width:100%; justify-content:center; } .replay-controls button { flex:1; } .board-footer { flex-direction:column; gap:3px; } .board-toolbar { gap:8px; margin-bottom:20px; } #draft-context { max-width:60%; font-size:10px; } .analysis-card { padding:16px; } .analysis-card input[type=text] { max-width:100%; } .app-footer { gap:12px; } #view-markets input#q { width:100%; margin-bottom:10px; } }
+  @media(prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } *,*::before,*::after { transition:none !important; } }
+
+
+  .ban-number { font-size:8px; color:#9aa9bf; margin-top:3px; letter-spacing:.4px; }
+  input.ban-caption { text-transform:none; letter-spacing:0; color:var(--text); }
+  .ban-card:not(.is-empty) { background:#152238; }
+  .ban-card:not(.is-empty) .champion-portrait::after { content:""; position:absolute; width:46px; height:1px; background:#d8e1f2; transform:rotate(-45deg); top:28px; }
+  .pick-card:not(.is-empty) { background:#172339; }
+  .is-current { border-color:#6988b3; }
+  .red .is-current { border-color:#aa7286; }
+  .is-upcoming { opacity:.55; }
+  .pick-effect.is-positive { color:var(--green); }
+  .pick-effect.is-negative { color:var(--red); }
+  .portrait-fallback { font-size:17px; font-weight:600; color:#8d9bb3; }
+  .board-tools { display:flex; align-items:center; gap:14px; }
+  #focus-draft { font-size:10px; padding:4px 8px; white-space:nowrap; }
+  .draft-focus .app-header,.draft-focus .workspace-heading,.draft-focus .browser-panel,.draft-focus .draft-settings,.draft-focus .model-details,.draft-focus .app-footer { display:none; }
+  .draft-focus main { padding:12px 28px; }
+  .draft-focus .draft-board { border:0; padding:0; background:transparent; }
+  .draft-focus .board-toolbar { margin-bottom:16px; }
+  .draft-focus .team-heading { margin-bottom:8px; }
+  .draft-focus .team-stats { padding-bottom:10px; margin-bottom:8px; }
+  .draft-focus .team-stats strong { font-size:26px; }
+  .draft-focus .ban-card { min-height:82px; padding-top:6px; padding-bottom:5px; }
+  .draft-focus .draft-section-label { margin-top:9px; }
+  .draft-focus .pick-card { min-height:52px; padding-top:6px; padding-bottom:6px; }
+  .draft-focus .pick-card .champion-portrait { width:37px; height:37px; }
+  .draft-focus .pick-role { height:15px; line-height:15px; }
+  .draft-focus .draft-probability { margin-top:16px; }
+  .draft-focus .replay-bar { padding-top:12px; }
+  .draft-focus .replay-track { margin-top:11px; }
+  .draft-focus .board-label { font-size:16px; letter-spacing:-.3px; color:var(--text); }
+  @media(max-width:600px) { .board-tools { gap:7px; justify-content:flex-end; } .board-tools #draft-context { max-width:65%; } .draft-focus main { padding:18px 14px; } }
+  .live-draft { margin-top:20px; }
+  .live-bans-note { display:flex; justify-content:space-between; gap:10px; padding:10px 0; color:var(--muted); font-size:10px; border-bottom:1px solid var(--line); }
+  .live-bans-note span:first-child { color:#bdc7d9; font-weight:600; }
+  .live-pick-name { font-size:14px; font-weight:650; }
+  .live-pick-player { font-size:11px; color:var(--muted); }
+  .live-pick-role { min-width:43px; font-size:9px; }
+  .live-pick-waiting { color:#9baac1; }
+  .live-draft-footer { display:flex; justify-content:space-between; align-items:center; gap:15px; margin-top:14px; color:#c4d1e6; font-size:12px; }
+  #lv-draft-clock { white-space:nowrap; font-variant-numeric:tabular-nums; }
+  #lv-draft-prob-fill { width:50%; background:var(--blue); transition:width .25s; }
+  .live-probability.is-unknown { background:var(--line); }
+  .live-probability.is-unknown #lv-draft-prob-fill { background:var(--line); }
+  .live-stats-panel { border:1px solid var(--line); border-radius:10px; padding:20px; background:var(--surface); margin-top:20px !important; }
+  .live-draft-focus .app-header,.live-draft-focus .workspace-heading,.live-draft-focus .browser-panel,.live-draft-focus .live-controls,.live-draft-focus .live-stats-panel,.live-draft-focus .live-feed-note,.live-draft-focus .app-footer { display:none !important; }
+  .live-draft-focus main { padding:24px 28px; }
+  .live-draft-focus .live-draft { margin:0; border:0; padding:0; background:transparent; }
+  @media(max-width:600px) { .live-draft-footer { align-items:flex-start; font-size:11px; } .live-stats-panel { padding:14px; } .live-draft-focus main { padding:18px 14px; } }
 </style>
 </head>
 <body>
-<h1>LoL Ticker</h1><span id="kstatus" class="unk">kalshi: ?</span> <span id="recstatus" class="unk" style="display:none"></span>
-<div style="margin-top:12px;padding:8px 10px;border:1px solid #ddd;border-radius:6px">
-  <b style="font-size:13px">Browse</b>
-  <select id="pk-season"></select>
-  <select id="pk-league"></select>
-  <select id="pk-tr" style="max-width:380px"></select>
-  <span id="pk-meta" class="muted"></span>
-  <div id="pk-games" style="max-height:260px;overflow-y:auto;margin-top:6px"></div>
-  <div id="sel-banner" style="display:none;margin-top:8px;padding:6px 10px;background:#eef3ff;border-left:3px solid #1652f0;font-size:13px"></div>
-</div>
 
-<div style="margin-top:12px;padding:8px 10px;border:1px solid #ddd;border-radius:6px">
-  <b style="font-size:13px">Live game</b>
-  <select id="lv-game"><option value="">(checking LoL Esports schedule…)</option></select>
+<a href="#workspace" class="skip-link" style="position:fixed;top:-60px" onfocus="this.style.top='8px'" onblur="this.style.top='-60px'">Skip to workspace</a>
+<header class="app-header"><div class="header-inner">
+  <a class="brand" href="#draft" aria-label="LoL Ticker draft room"><svg viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M4 20V8l10-5 10 5v12l-10 5-10-5Z" stroke="currentColor" stroke-width="1.5"/><path d="m8 17 4-7 4 8 4-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>LoL Ticker</a>
+  <nav class="app-nav" role="tablist" aria-label="Workspace">
+    <button id="tab-draft" role="tab" aria-controls="view-draft" aria-selected="true" data-view="draft">Draft room</button>
+    <button id="tab-live" role="tab" aria-controls="view-live" aria-selected="false" tabindex="-1" data-view="live">Live games</button>
+    <button id="tab-markets" role="tab" aria-controls="view-markets" aria-selected="false" tabindex="-1" data-view="markets">Markets</button>
+    <button id="tab-analysis" role="tab" aria-controls="view-analysis" aria-selected="false" tabindex="-1" data-view="analysis">Analysis</button>
+    <a class="players-link" href="/players">Player impact ↗</a>
+  </nav>
+  <div class="header-status"><span id="kstatus" class="unk">Kalshi · connecting</span><span id="recstatus" class="unk" style="display:none"></span></div>
+</div></header>
+<main id="workspace">
+  <div class="workspace-heading"><div><div class="eyebrow">LEAGUE OF LEGENDS / INTELLIGENCE</div><h1 id="workspace-title">Draft room</h1><p id="workspace-description">Every pick changes the game. See the draft take shape.</p></div><button class="secondary-button" id="new-draft" onclick="newDraft()">＋ New draft</button></div>
+  <section class="browser-panel" aria-label="Game browser">
+    <div class="browser-toolbar">
+      <label for="pk-season">Season <select id="pk-season" aria-label="Season"></select></label>
+      <label for="pk-league">League <select id="pk-league" aria-label="League"></select></label>
+      <label for="pk-tr" class="tournament-field">Tournament <select id="pk-tr" aria-label="Tournament"></select></label>
+      <button id="browse-toggle" aria-expanded="false" aria-controls="pk-games">Browse games <span aria-hidden="true">⌄</span></button>
+    </div>
+    <div id="pk-meta" class="muted" role="status"></div>
+    <div id="pk-games" hidden></div>
+    <div id="sel-banner" style="display:none"></div>
+  </section>
+  <section id="view-draft" class="view-panel" role="tabpanel" aria-labelledby="tab-draft">
+    <div class="draft-board">
+      <div class="board-toolbar"><span class="board-label"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="5" height="11" rx="1" stroke="currentColor"/><rect x="9.5" y="2.5" width="5" height="11" rx="1" stroke="currentColor"/></svg>DRAFT BOARD</span><div class="board-tools"><span id="draft-context">Competitive draft / 20 turns</span><button id="focus-draft" class="secondary-button" aria-pressed="false" onclick="focusDraft()">Focus view</button></div></div>
+      <div class="draft-columns">
+        <section class="team-panel blue" aria-label="Blue side draft">
+          <div class="team-heading"><h2 id="sim-blue-name">Blue team</h2><span class="side-badge">Blue side</span></div>
+          <div class="team-stats"><div class="prior-stat"><span>Pre-draft probability</span><strong id="sim-blue-pre">50.0%</strong></div><div><span>Model win probability</span><strong id="sim-blue-prob">—</strong></div></div>
+          <div id="sim-blue"></div>
+        </section>
+        <section class="team-panel red" aria-label="Red side draft">
+          <div class="team-heading"><h2 id="sim-red-name">Red team</h2><span class="side-badge">Red side</span></div>
+          <div class="team-stats"><div class="prior-stat"><span>Pre-draft probability</span><strong id="sim-red-pre">50.0%</strong></div><div><span>Model win probability</span><strong id="sim-red-prob">—</strong></div></div>
+          <div id="sim-red"></div>
+        </section>
+      </div>
+      <div class="draft-probability" aria-hidden="true"><div id="sim-prob-fill"></div></div>
+      <div class="replay-bar">
+        <div class="replay-caption"><strong id="sim-progress-count">00 / 20</strong><span id="sim-turn-label" role="status">Choose a game or start your own draft</span></div>
+        <div class="replay-controls" role="group" aria-label="Draft replay">
+          <button id="sim-replay-start" aria-label="Rewind to start" title="Rewind to start">|‹</button>
+          <button id="sim-replay-prev" aria-label="Previous turn" title="Previous turn">‹</button>
+          <button id="sim-replay-toggle" aria-label="Play draft replay">▶ Play</button>
+          <button id="sim-replay-next" aria-label="Next turn" title="Next turn">›</button>
+          <button id="sim-replay-end" aria-label="Skip to final draft" title="Skip to final draft">›|</button>
+        </div>
+      </div>
+      <div class="replay-track" aria-hidden="true"><div id="sim-progress-fill"></div></div>
+      <div class="board-footer"><span>Competitive pick &amp; ban order · 1.2 seconds per turn</span><span>Pre-draft prior + learned champion effects</span></div>
+    </div>
+    <div class="draft-settings"><div class="settings-fields"><label for="sim-pre">Blue pre-draft win % <input id="sim-pre" type="number" min="1" max="99" value="50"></label><label for="sim-patch">Patch <select id="sim-patch"><option value="">No patch adjustment</option></select></label><button class="secondary-button" onclick="simReset()">Reset picks &amp; bans</button></div><span id="sim-summary" role="status"></span></div>
+    <datalist id="champlist"></datalist>
+    <details class="model-details"><summary>How this is scored &amp; per-turn impact</summary><p class="muted">The draft model estimates the market’s re-rating after champion select, starting from the pre-draft probability. Pick, ban, role, patch, synergy, and matchup effects are included when available. These small draft effects are directional estimates; champion identity explains only a small part of the market’s move. Each card shows the change for that side in probability points.</p><p id="sim-meta" class="muted" role="status">Loading draft model…</p><div id="sim-log" class="muted"></div></details>
+  </section>
+  <section id="view-live" class="view-panel" role="tabpanel" aria-labelledby="tab-live" hidden><div class="live-controls" style="margin-top:12px;padding:8px 10px;border:1px solid #273247;border-radius:6px">
+  <h2>Live game monitor</h2>
+  <select id="lv-game" aria-label="Live game"><option value="">(checking LoL Esports schedule…)</option></select>
   <button onclick="lvRefresh()">Refresh</button>
   <label style="margin-left:8px;font-size:12px"><input type="checkbox" id="lv-auto" checked> auto every
-    <select id="lv-int"><option value="1000">1 s</option><option value="2000" selected>2 s</option><option value="5000">5 s</option><option value="30000">30 s</option></select>
+    <select id="lv-int" aria-label="Live refresh interval"><option value="1000">1 s</option><option value="2000" selected>2 s</option><option value="5000">5 s</option><option value="30000">30 s</option></select>
     (feed is 1 frame/s; quotes every 5 s)</label>
+  <label style="margin-left:8px;font-size:12px"><input type="checkbox" id="lv-market-adjust" checked onchange="lvRenderChart()"> Adjust markets for feed delay</label>
+  <span id="lv-market-timing" class="muted" style="margin-left:8px" role="status">Market quotes shown ahead by the measured feed delay.</span>
   <span class="muted" style="margin-left:8px">chart: wheel / drag-box zoom, shift+drag pan, double-click or <button onclick="resetZoom(lvChart)" style="font-size:12px;padding:2px 8px">reset</button></span>
   <span id="lv-meta" class="muted" style="margin-left:8px"></span>
-  <div id="lv-box" style="display:none;margin-top:6px">
+  </div>
+  <section id="lv-draft" class="draft-board live-draft" aria-label="Live draft room">
+    <div class="board-toolbar"><span class="board-label">LIVE DRAFT ROOM</span><div class="board-tools"><span id="lv-draft-context" class="muted">Waiting for a live game</span><button id="lv-draft-focus" class="secondary-button" aria-pressed="false" onclick="focusDraft(undefined, true)">Focus view</button></div></div>
+    <div class="draft-columns">
+      <section class="team-panel blue" aria-label="Live blue side draft">
+        <div class="team-heading"><h2 id="lv-draft-blue-name">Blue team</h2><span class="side-badge">Blue side</span></div>
+        <div class="team-stats"><div class="prior-stat"><span>Model without champions</span><strong id="lv-draft-blue-state">—</strong></div><div><span>Live win probability</span><strong id="lv-draft-blue-prob">—</strong></div></div>
+        <div class="live-bans-note"><span>Bans</span><span>Not provided by the live feed</span></div>
+        <div class="draft-section-label">Champion picks · by role</div><div id="lv-draft-blue-picks" class="pick-list"></div>
+      </section>
+      <section class="team-panel red" aria-label="Live red side draft">
+        <div class="team-heading"><h2 id="lv-draft-red-name">Red team</h2><span class="side-badge">Red side</span></div>
+        <div class="team-stats"><div class="prior-stat"><span>Model without champions</span><strong id="lv-draft-red-state">—</strong></div><div><span>Live win probability</span><strong id="lv-draft-red-prob">—</strong></div></div>
+        <div class="live-bans-note"><span>Bans</span><span>Not provided by the live feed</span></div>
+        <div class="draft-section-label">Champion picks · by role</div><div id="lv-draft-red-picks" class="pick-list"></div>
+      </section>
+    </div>
+    <div class="draft-probability live-probability" aria-hidden="true"><div id="lv-draft-prob-fill"></div></div>
+    <div class="live-draft-footer"><span id="lv-draft-status" role="status">Checking the live schedule…</span><span id="lv-draft-clock">Game clock —</span></div>
+    <div class="board-footer"><span>The model uses the current game state and champions.</span><span>Draft order is unavailable in the live feed.</span></div>
+  </section>
+  <div id="lv-box" class="live-stats-panel" style="display:none;margin-top:6px">
     <div id="lv-line" style="font-size:14px"></div>
     <div id="lv-state" class="muted" style="margin-top:4px"></div>
     <div style="position:relative;height:160px;margin-top:6px"><canvas id="lvchart"></canvas></div>
     <div id="lv-totals" style="font-size:13px;margin-top:8px"></div>
     <div class="cols" style="margin-top:4px"><div id="lv-sb-blue"></div><div id="lv-sb-red"></div></div>
   </div>
-</div>
-<div style="margin-top:12px">
+
+    <p class="muted live-feed-note" style="margin-top:16px">Live stats appear when a game is in progress. Feed updates and exchange quotes keep their original timestamps.</p>
+  </section>
+  <section id="view-markets" class="view-panel" role="tabpanel" aria-labelledby="tab-markets" hidden><h2>Market comparison</h2><p class="muted">Compare Kalshi and Polymarket prices for the same game.</p><div style="margin-top:12px">
   <input id="q" type="text" placeholder="or search: team / date, e.g. LNG 2026-08-09">
   <button onclick="search()">Search</button>
   <button onclick="clearChart()">Clear chart</button>
@@ -78,7 +343,8 @@
 <div class="muted" style="margin-top:6px">zoom: mouse wheel · drag a box · shift+drag to pan · double-click or <button onclick="resetZoom(chart)" style="font-size:12px;padding:2px 8px">reset</button></div>
 <div id="chartbox"><canvas id="chart"></canvas></div>
 
-<h2 style="font-size:17px;margin-top:28px">Calibration</h2>
+</section>
+  <section id="view-analysis" class="view-panel" role="tabpanel" aria-labelledby="tab-analysis" hidden><nav class="analysis-nav" aria-label="Analysis sections"><a href="#analysis-calibration">Calibration</a><a href="#analysis-draft">Draft edge</a><a href="#analysis-timeline">Game timeline</a><a href="#analysis-models">Outcome models</a></nav><section class="analysis-card" id="analysis-calibration"><h2 style="font-size:17px;margin-top:28px">Calibration</h2>
 <div>
   <label>odds sampled
     <select id="cal-horizon">
@@ -113,7 +379,7 @@ Point size ∝ sample count. "After start" horizons approximate post-draft odds:
 match markets — for map 2+ markets the offset lands mid-series, not post-draft.</p>
 <div id="calbox" style="position:relative;height:420px"><canvas id="calchart"></canvas></div>
 
-<h2 style="font-size:17px;margin-top:28px">Draft analysis</h2>
+</section><section class="analysis-card" id="analysis-draft"><h2 style="font-size:17px;margin-top:28px">Draft analysis</h2>
 <p class="muted">Per-map winner markets matched to Oracle's Elixir game data. For each game,
 a team's win odds are sampled 16 min before actual game start (pre-draft) and 2 min after
 (post-draft); <b>Δ draft</b> is the market's re-rating after seeing the draft, in probability
@@ -138,7 +404,7 @@ read of the draft). Games covered by both platforms count once.</p>
 </div>
 
 
-<h2 style="font-size:17px;margin-top:28px">Game timeline vs odds</h2>
+</section><section class="analysis-card" id="analysis-timeline"><h2 style="font-size:17px;margin-top:28px">Game timeline vs odds</h2>
 <p class="muted">gol.gg in-game events aligned to the market's odds. Alignment anchors each
 significant event (kills, objectives, towers) to the nearest odds jump; a persistent step in the
 clock offset is a detected <b>pause</b> (shaded grey), and the solid vertical lines mark inferred game
@@ -173,7 +439,7 @@ event is worth (or the model over-credits it — e.g. gold from the play lands i
 <div style="position:relative;height:360px"><canvas id="cmpchart"></canvas></div>
 <div id="cmp-table"></div>
 
-<h2 style="font-size:17px;margin-top:28px">Odds-free evaluation (outcome models)</h2>
+</section><section class="analysis-card" id="analysis-models"><h2 style="font-size:17px;margin-top:28px">Odds-free evaluation (outcome models)</h2>
 <p class="muted">No market data here. <b>Event WPA</b>: an in-game win-probability model fitted on
 gol.gg game states (gold / kill / tower / dragon / baron / inhib / herald / grub / atakhan / plate
 diffs, game time, side, Elo prior) against who actually won; each event's value is model WP after
@@ -241,36 +507,94 @@ probability beyond team strength. Both sit next to the market-based numbers abov
   </div>
 </div>
 
-<h2 style="font-size:17px;margin-top:28px">Draft simulator</h2>
-<p class="muted">Walks the competitive draft order (3+3 bans, 6 picks, 2+2 bans, 4 picks).
-Each action's effect is estimated by a ridge model fit on the market's post-draft re-rating
-across all matched games — own/enemy picks, own/enemy bans, same-team synergies, and
-cross-team matchups. Set blue's pre-draft win probability, then fill champions in order;
-the running estimate updates after every action. Champion names follow Oracle's Elixir
-spelling (autocomplete). Picks take an optional role (top/jng/mid/bot/sup) and the patch
-selector applies champion×patch meta effects; both are deviations on top of the base champion
-effect, so leaving them blank falls back to the base. Grey "unseen" = champion not in the
-training data (no effect).</p>
-<div style="margin-bottom:8px">
-  <label>blue pre-draft win % <input id="sim-pre" type="number" min="1" max="99" value="50" style="width:60px"></label>
-  <label style="margin-left:8px">patch <select id="sim-patch"><option value="">(none)</option></select></label>
-  <button onclick="simReset()">Reset</button>
-  <span id="sim-summary" style="margin-left:12px;font-weight:600"></span>
-  <span id="sim-meta" class="muted" style="margin-left:12px"></span>
-</div>
-<datalist id="champlist"></datalist>
-<div class="cols">
-  <div><h3 style="font-size:14px;color:#1652f0">Blue side</h3><div id="sim-blue"></div></div>
-  <div><h3 style="font-size:14px;color:#c22">Red side</h3><div id="sim-red"></div></div>
-</div>
-<div id="sim-log" class="muted" style="margin-top:10px;font-size:12px"></div>
-
+</section></section>
+  <footer class="app-footer"><span>LoL Ticker <span aria-hidden="true">/</span> Draft, live state &amp; market intelligence</span><span>Kalshi · Polymarket · gol.gg</span></footer>
+</main>
 <script>
+
+// Workspace navigation preserves mounted controls and chart instances.
+const WORKSPACE_VIEWS = {
+  draft: ['Draft room', 'Every pick changes the game. See the draft take shape.'],
+  live: ['Live games', 'The draft, live forecast, and market — together as the game unfolds.'],
+  markets: ['Markets', 'Two exchanges. One view of the game.'],
+  analysis: ['Analysis', 'Explore draft edges, event impact, and model performance.'],
+};
+function showView(name, updateHash = true) {
+  if (!WORKSPACE_VIEWS[name]) return;
+  if (name !== 'draft') focusDraft(false);
+  if (name !== 'live') focusDraft(false, true);
+  document.title = 'LoL Ticker · ' + WORKSPACE_VIEWS[name][0];
+  document.querySelectorAll('[data-view]').forEach(button => {
+    const active = button.dataset.view === name;
+    button.setAttribute('aria-selected', String(active)); button.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll('.view-panel').forEach(panel => { panel.hidden = panel.id !== 'view-' + name; });
+  document.getElementById('workspace-title').textContent = WORKSPACE_VIEWS[name][0];
+  document.getElementById('workspace-description').textContent = WORKSPACE_VIEWS[name][1];
+  document.getElementById('new-draft').hidden = name !== 'draft';
+  document.querySelector('.browser-panel').hidden = name === 'live';
+  if (updateHash) history.replaceState(null, '', '#' + name);
+  requestAnimationFrame(() => { if (typeof Chart !== 'undefined') Object.values(Chart.instances).forEach(c => { if (c.canvas.closest('.view-panel')?.hidden === false) c.resize(); }); });
+}
+document.querySelectorAll('[data-view]').forEach(button => {
+  button.addEventListener('click', () => showView(button.dataset.view));
+  button.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const tabs = [...document.querySelectorAll('[data-view]')], i = tabs.indexOf(button);
+    const next = event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs.at(-1) : tabs[(i + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+    showView(next.dataset.view); next.focus();
+  });
+});
+function setBrowserOpen(open) {
+  document.getElementById('pk-games').hidden = !open;
+  document.getElementById('browse-toggle').setAttribute('aria-expanded', String(open));
+}
+function focusDraft(force, live = false) {
+  const className = live ? 'live-draft-focus' : 'draft-focus';
+  const focused = force ?? !document.body.classList.contains(className);
+  document.body.classList.toggle(className, focused);
+  const button = document.getElementById(live ? 'lv-draft-focus' : 'focus-draft');
+  button.textContent = focused ? 'Exit focus' : 'Focus view';
+  button.setAttribute('aria-pressed', String(focused));
+  if (focused) window.scrollTo({top:0});
+}
+document.addEventListener('keydown', event => { if (event.key === 'Escape') { focusDraft(false); focusDraft(false, true); } });
+document.getElementById('browse-toggle').addEventListener('click', () => setBrowserOpen(document.getElementById('pk-games').hidden));
+function updateDraftContext(d) {
+  document.getElementById('sim-blue-name').textContent = d?.blue_team || 'Blue team';
+  document.getElementById('sim-red-name').textContent = d?.red_team || 'Red team';
+  document.getElementById('draft-context').textContent = d ? `${d.trname} / Game ${d.game_num} / ${d.patch || 'Patch unknown'}` : 'Competitive draft / 20 turns';
+  document.querySelectorAll('#pk-games tr[data-game-id]').forEach(row => row.setAttribute('aria-selected', String(row.dataset.gameId === String(d?.game_id))));
+}
+function newDraft() {
+  PK.autoSelect = false;
+  selectionRequest++;
+  SEL = null; SEL_TEAMS = [];
+  document.getElementById('sel-banner').style.display = 'none';
+  document.getElementById('sim-pre').value = 50;
+  updateDraftContext(null); simReset(); showView('draft');
+}
+function restoreView() {
+  const target = location.hash.slice(1);
+  showView(target.startsWith('analysis-') ? 'analysis' : (WORKSPACE_VIEWS[target] ? target : 'draft'), false);
+}
+window.addEventListener('hashchange', restoreView);
+restoreView();
+// Apply a legible palette to every existing analytical chart.
+if (typeof Chart !== 'undefined') {
+  Chart.defaults.color = '#9aa9bf'; Chart.defaults.borderColor = '#263247';
+  Chart.defaults.font.family = 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  Chart.defaults.plugins.tooltip.backgroundColor = '#1c293e';
+  Chart.defaults.plugins.tooltip.titleColor = '#edf1f8';
+  Chart.defaults.plugins.tooltip.bodyColor = '#c4cfe1';
+}
+
 // shared zoom/pan behaviour (chartjs-plugin-zoom): wheel zoom, drag-box zoom,
 // shift+drag pan, double-click reset
 const ZOOM_OPTS = {
   zoom: {wheel: {enabled: true, speed: 0.15}, pinch: {enabled: true},
-         drag: {enabled: true, backgroundColor: 'rgba(22,82,240,0.12)', borderColor: '#1652f0', borderWidth: 1},
+         drag: {enabled: true, backgroundColor: 'rgba(22,82,240,0.12)', borderColor: '#8ab8ff', borderWidth: 1},
          mode: 'x'},
   pan: {enabled: true, mode: 'x', modifierKey: 'shift'},
   limits: {y: {min: 0, max: 1}},
@@ -280,8 +604,8 @@ function wireDblClick(canvasId, getChart){
   const cv = document.getElementById(canvasId);
   if (cv && !cv._dblWired){ cv._dblWired = true; cv.addEventListener('dblclick', () => resetZoom(getChart())); }
 }
-const COLORS = ['#1652f0','#0aa574','#d33','#e08b00','#7b3ff2','#0aa5a5',
-                '#b0187b','#5b7a1e','#444','#888'];
+const COLORS = ['#8ab8ff','#6fdbb0','#ed8c9e','#e08b00','#b494f4','#0aa5a5',
+                '#b0187b','#5b7a1e','#8996ae','#9aa9bf'];
 let chart = null, colorIdx = 0, curGame = null, outageSpans = [], gameStart = null;
 
 function fmtT(t){ const d = new Date(t*1000);
@@ -314,7 +638,7 @@ async function refreshStatus(){
     rec.textContent = 'recorder: last snapshot ' + (age/3600).toFixed(1) + 'h ago';
   } else { rec.style.display='none'; }
 }
-refreshStatus(); setInterval(refreshStatus, 60000);
+refreshStatus().catch(() => {}); setInterval(() => refreshStatus().catch(() => {}), 60000);
 
 function el(tag, attrs, text){
   const e = document.createElement(tag);
@@ -359,9 +683,10 @@ async function search(){
 }
 document.getElementById('q').addEventListener('keydown', e => { if(e.key==='Enter') search(); });
 
-async function openGame(platform, eventId){
+async function openGame(platform, eventId, selectionId){
   curGame = {platform, eventId};
   const g = await getJSON(`/api/game?platform=${platform}&event_id=${encodeURIComponent(eventId)}`);
+  if (selectionId != null && selectionId !== selectionRequest) return;
   gameStart = g.game_start_ts;
   document.getElementById('gamehdr').textContent =
     `${platform} / ${eventId} — game start ${g.game_start_ts ? fmtT(g.game_start_ts) : '?'}`;
@@ -460,97 +785,215 @@ async function toggleMarket(cb, marketId, label){
     c.data.datasets.push({tag: tag+'|trades', label: short+' (trades)', borderColor: color,
       showLine: false, pointRadius: 2, data: s.trades.map(([t,p]) => ({x: t, y: p}))});
   c.update();
+  document.getElementById('chartbox').classList.toggle('has-data', c.data.datasets.length > 0);
 }
 
 
 // ---------------------------------------------------------------- simulator
-let simOrder = null, simActions = [], simRoles = [];
+// Keep the board usable while model data loads; this is the server's DRAFT_ORDER.
+let simOrder = [
+  ['B','ban'],['R','ban'],['B','ban'],['R','ban'],['B','ban'],['R','ban'],
+  ['B','pick'],['R','pick'],['R','pick'],['B','pick'],['B','pick'],['R','pick'],
+  ['R','ban'],['B','ban'],['R','ban'],['B','ban'],
+  ['R','pick'],['B','pick'],['B','pick'],['R','pick']
+];
+let simActions = simOrder.map(() => ''), simRoles = simOrder.map(() => '');
 const ROLES = ['', 'top', 'jng', 'mid', 'bot', 'sup'];
-async function simInit(){
-  const [champs, patches] = await Promise.all([
-    getJSON('/api/draft/champlist'), getJSON('/api/draft/patches')]);
-  const dl = document.getElementById('champlist');
-  dl.innerHTML = '';
-  champs.forEach(c => dl.appendChild(el('option', {value: c})));
-  const ps = document.getElementById('sim-patch');
-  patches.forEach((pt, i) => { const o = el('option', {value: pt}, pt); if (i === 0) o.selected = true; ps.appendChild(o); });
-  ps.addEventListener('change', simRun);
-  const d = await getJSON('/api/draft/simulate?pre=0.5&seq=[]');
-  simOrder = d.order;
-  simRoles = simOrder.map(() => '');
-  document.getElementById('sim-meta').textContent =
-    `model: ${d.model.rows} game-sides, ${d.model.features} features, held-out R² random=${d.model.r2} / next-patch=${d.model.r2_time ?? 'n/a'} (low by nature: champion identity explains little of the market's draft re-rating)`;
-  simActions = simOrder.map(() => '');
-  simRender();
+const simRoleNames = {top:'Top', jng:'Jungle', mid:'Mid', bot:'Bot', sup:'Support'};
+const simNode = id => document.getElementById(id);
+const simNorm = value => String(value).toLowerCase().replace(/[^a-z0-9]/g, '');
+const simPP = value => (value > 0 ? '+' : '') + (value * 100).toFixed(1);
+let simSlots = [], simResult = null, simError = '', simBusy = false;
+let simCursor = 20, simPlaying = false, simTimer = null, simController = null, simRequest = 0, simPlayback = 0;
+let simKnownActions = simActions, simPortraits = {}, simEditTimer = null;
+function simPre(){ return Math.min(99, Math.max(1, Number(simNode('sim-pre').value) || 50)) / 100; }
+function simPause(){ simPlaying = false; simPlayback++; clearTimeout(simTimer); simTimer = null; }
+function simPortrait(slot, champion){
+  const url = simPortraits[simNorm(champion)] || '';
+  slot.fallback.textContent = champion ? champion.slice(0, 2).toUpperCase() : (slot.action === 'ban' ? '×' : '◇');
+  if (slot.image.dataset.url === url) return;
+  slot.image.dataset.url = url; slot.image.hidden = true; slot.fallback.hidden = false;
+  if (url) slot.image.src = url; else slot.image.removeAttribute('src');
+}
+function simBuild(){
+  simSlots = [];
+  for (const side of ['B', 'R']){
+    const box = simNode(side === 'B' ? 'sim-blue' : 'sim-red'); box.replaceChildren();
+    for (const action of ['ban', 'pick']){
+      box.appendChild(el('div', {class:'draft-section-label'}, action === 'ban' ? 'Bans' : 'Champion picks'));
+      const list = el('div', {class:action === 'ban' ? 'ban-grid' : 'pick-list'}); box.appendChild(list);
+      let number = 0;
+      simOrder.forEach(([team, kind], i) => {
+        if (team !== side || kind !== action) return; number++;
+        const card = el('div', {class:action === 'ban' ? 'ban-card' : 'pick-card'});
+        const portrait = el('div', {class:'champion-portrait'});
+        const image = el('img', {alt:'', loading:'eager', decoding:'async'});
+        const fallback = el('span', {class:'portrait-fallback', 'aria-hidden':'true'}); image.hidden = true;
+        portrait.append(image, fallback); card.appendChild(portrait);
+        image.addEventListener('load', () => { image.hidden = false; fallback.hidden = true; });
+        image.addEventListener('error', () => { image.hidden = true; fallback.hidden = false; });
+        const identity = action === 'pick' ? el('div', {class:'pick-identity'}) : card;
+        const input = el('input', {type:'text', list:'champlist', class:action === 'ban' ? 'ban-caption' : 'pick-input',
+          placeholder:action === 'ban' ? 'Awaiting ban' : 'Awaiting pick', autocomplete:'off', spellcheck:'false',
+          'aria-label':`${side === 'B' ? 'Blue' : 'Red'} ${action} ${number} champion`});
+        identity.appendChild(input);
+        input.addEventListener('input', () => {
+          simPause(); simActions[i] = input.value.trim(); simCursor = simOrder.length;
+          simController?.abort(); simRequest++; simResult = null; simBusy = true; simError = '';
+          clearTimeout(simEditTimer); simRender();
+          simEditTimer = setTimeout(simRun, 250);
+        });
+        input.addEventListener('change', () => {
+          clearTimeout(simEditTimer);
+          simPause(); simActions[i] = input.value.trim(); simCursor = simOrder.length; simRun();
+        });
+        let role = null;
+        if (action === 'pick'){
+          role = el('select', {class:'pick-role', 'aria-label':`${side === 'B' ? 'Blue' : 'Red'} pick ${number} role`});
+          ROLES.forEach(value => role.appendChild(el('option', {value}, simRoleNames[value] || 'Assign role')));
+          role.addEventListener('change', () => { simPause(); simRoles[i] = role.value; simRun(); });
+          identity.appendChild(role); card.appendChild(identity);
+        }
+        const effect = el('span', {class:'pick-effect'}, '—');
+        if (action === 'pick') card.appendChild(effect);
+        card.appendChild(el('span', {class:action === 'ban' ? 'ban-number' : 'pick-tag'}, action === 'ban' ? 'BAN ' + number : side + number));
+        list.appendChild(card); simSlots[i] = {card, image, fallback, input, role, effect, action, side};
+      });
+    }
+  }
 }
 function simRender(results){
-  const steps = results ? results.steps : [];
-  const byStep = {}; steps.forEach(s => byStep[s.step] = s);
-  for (const side of ['B','R']){
-    const box = document.getElementById(side === 'B' ? 'sim-blue' : 'sim-red');
-    box.innerHTML = '';
-    const table = el('table');
-    const hdr = el('tr'); ['#','action','champion','Δ blue win','blue win'].forEach(h => hdr.appendChild(el('th', {}, h)));
-    table.appendChild(hdr);
-    simOrder.forEach((o, i) => {
-      if (o[0] !== side) return;
-      const tr = el('tr');
-      tr.appendChild(el('td', {class: 'muted'}, String(i + 1)));
-      tr.appendChild(el('td', {}, o[1]));
-      const inp = el('input', {type: 'text', list: 'champlist', value: simActions[i] || '', style: 'width:120px'});
-      inp.addEventListener('change', () => { simActions[i] = inp.value.trim(); simRun(); });
-      const td = el('td'); td.appendChild(inp);
-      if (o[1] === 'pick'){
-        const sel = el('select', {style: 'margin-left:4px'});
-        ROLES.forEach(rl => { const op = el('option', {value: rl}, rl || 'role?'); if (simRoles[i] === rl) op.selected = true; sel.appendChild(op); });
-        sel.addEventListener('change', () => { simRoles[i] = sel.value; simRun(); });
-        td.appendChild(sel);
-      }
-      tr.appendChild(td);
-      const st = byStep[i + 1];
-      const dtd = el('td', {}, st ? pp(st.dp_blue) : '');
-      if (st && st.dp_blue > 0) dtd.style.color = '#0a7a44';
-      if (st && st.dp_blue < 0) dtd.style.color = '#c22';
-      if (st && !st.known) { dtd.textContent = 'unseen'; dtd.style.color = '#888'; }
-      tr.appendChild(dtd);
-      tr.appendChild(el('td', {}, st ? (st.p_blue * 100).toFixed(1) + '%' : ''));
-      table.appendChild(tr);
-    });
-    box.appendChild(table);
-  }
-  const sum = document.getElementById('sim-summary');
-  const log = document.getElementById('sim-log');
-  if (results && steps.length){
-    const last = steps[steps.length - 1];
-    sum.textContent = `blue ${ (results.pre_blue*100).toFixed(0) }% → ${ (last.p_blue*100).toFixed(1) }% (${pp(last.p_blue - results.pre_blue)} pp)`;
-    log.innerHTML = steps.map(s =>
-      `<div><b>${s.step}. ${s.side === 'B' ? 'Blue' : 'Red'} ${s.action} ${s.champion}${s.role ? ' (' + s.role + ')' : ''}</b>: ${pp(s.dp_blue)} pp` +
-      (s.terms.length ? ' — ' + s.terms.map(t => `${t[0].replace(/^(own|enemy)_/, '')} ${t[1] > 0 ? '+' : ''}${t[1]} (n=${t[2]})`).join(', ') : '') +
-      '</div>').join('');
-  } else { sum.textContent = ''; log.innerHTML = ''; }
+  if (results !== undefined) simResult = results;
+  if (!simSlots.length) simBuild();
+  const byStep = new Map((simResult?.steps || []).map(step => [step.step, step]));
+  const visibleCount = simActions.slice(0, simCursor).filter(Boolean).length;
+  const next = simCursor < simOrder.length ? simCursor : simOrder.findIndex((_, i) => !simActions[i]);
+  simSlots.forEach((slot, i) => {
+    const visible = i < simCursor, champion = visible ? simActions[i] || '' : '', step = byStep.get(i + 1);
+    slot.card.classList.toggle('is-empty', !champion);
+    slot.card.classList.toggle('is-upcoming', !visible);
+    slot.card.classList.toggle('is-current', i === next);
+    if (document.activeElement !== slot.input) slot.input.value = champion;
+    slot.input.disabled = !visible; simPortrait(slot, champion);
+    if (slot.role){ slot.role.value = visible ? simRoles[i] || '' : ''; slot.role.disabled = !visible; }
+    const delta = step ? step.dp_blue * (slot.side === 'B' ? 1 : -1) : null;
+    slot.effect.textContent = step ? (step.known ? simPP(delta) + ' pp' : 'Unseen') : '—';
+    slot.effect.classList.toggle('is-positive', delta > 0); slot.effect.classList.toggle('is-negative', delta < 0);
+    slot.card.title = step ? `${slot.side === 'B' ? 'Blue' : 'Red'} win probability change: ${simPP(delta)} percentage points${step.known ? '' : ' · champion unseen by model'}` : '';
+  });
+  const pre = simPre(), probability = simResult ? simResult.p_blue : (visibleCount ? null : pre);
+  simNode('sim-blue-pre').textContent = (pre * 100).toFixed(1) + '%';
+  simNode('sim-red-pre').textContent = ((1 - pre) * 100).toFixed(1) + '%';
+  simNode('sim-blue-prob').textContent = probability == null ? '—' : (probability * 100).toFixed(1) + '%';
+  simNode('sim-red-prob').textContent = probability == null ? '—' : ((1 - probability) * 100).toFixed(1) + '%';
+  simNode('sim-prob-fill').style.width = ((probability ?? pre) * 100) + '%';
+  simNode('sim-progress-fill').style.width = (visibleCount / simOrder.length * 100) + '%';
+  simNode('sim-progress-count').textContent = `${String(visibleCount).padStart(2, '0')} / ${simOrder.length}`;
+  simNode('sim-turn-label').textContent = next < 0 ? 'Draft complete' : `${simOrder[next][0] === 'B' ? 'Blue' : 'Red'} ${simOrder[next][1]} · Turn ${next + 1}`;
+  const available = simActions.some(Boolean), toggle = simNode('sim-replay-toggle');
+  toggle.textContent = simPlaying ? 'Ⅱ Pause' : '▶ Play'; toggle.setAttribute('aria-label', simPlaying ? 'Pause draft replay' : 'Play draft replay'); toggle.setAttribute('aria-pressed', String(simPlaying)); toggle.disabled = !available;
+  for (const id of ['sim-replay-start', 'sim-replay-prev']) simNode(id).disabled = !available || simCursor === 0;
+  for (const id of ['sim-replay-next', 'sim-replay-end']) simNode(id).disabled = !available || simCursor === simOrder.length;
+  simNode('sim-summary').textContent = simError || (simBusy ? 'Updating draft estimate…' : visibleCount && probability != null
+    ? `Blue win probability ${simPP(probability - pre)} pp from pre-draft` : 'Choose a game or build a draft to begin.');
+  const log = simNode('sim-log'); log.replaceChildren();
+  (simResult?.steps || []).forEach(step => {
+    const delta = step.dp_blue * (step.side === 'B' ? 1 : -1);
+    const terms = (step.terms || []).map(term => `${String(term[0]).replace(/^(own|enemy)_/, '')}: ${term[1]} (n=${term[2]})`).join(', ');
+    log.appendChild(el('div', {}, `${step.step}. ${step.side === 'B' ? 'Blue' : 'Red'} ${step.action} ${step.champion}${step.role ? ' · ' + step.role : ''}: ${simPP(delta)} pp for ${step.side === 'B' ? 'blue' : 'red'}${terms ? ' — ' + terms : ''}`));
+  });
 }
 async function simRun(){
-  const pre = Math.min(99, Math.max(1, parseFloat(document.getElementById('sim-pre').value) || 50)) / 100;
-  const seq = simOrder.map((o, i) => [o[0], o[1], simActions[i] || '', simRoles[i] || '']);
-  const patch = document.getElementById('sim-patch').value;
-  const d = await getJSON(`/api/draft/simulate?pre=${pre}&patch=${encodeURIComponent(patch)}&seq=${encodeURIComponent(JSON.stringify(seq))}`);
-  // steps are numbered by sequence index; blanks are skipped server-side, so
-  // re-key by the original position to line up with the table
-  let k = 0; const mapped = [];
-  simOrder.forEach((o, i) => { if (simActions[i]) { const s = d.steps[k++]; if (s) { s.step = i + 1; mapped.push(s); } } });
-  d.steps = mapped;
-  simRender(d);
+  if (simActions !== simKnownActions){ simPause(); simCursor = simOrder.length; simKnownActions = simActions; }
+  simController?.abort(); const controller = new AbortController(); simController = controller;
+  const request = ++simRequest, pre = simPre(), patch = simNode('sim-patch').value;
+  const seq = simOrder.slice(0, simCursor).map(([side, action], i) => [side, action, simActions[i] || '', simRoles[i] || '']);
+  simError = ''; simResult = null; simBusy = true; simRender();
+  try {
+    const response = await fetch(API + `/api/draft/simulate?pre=${pre}&patch=${encodeURIComponent(patch)}&seq=${encodeURIComponent(JSON.stringify(seq))}`, {signal:controller.signal});
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const result = await response.json();
+    if (result.error || !Array.isArray(result.steps) || !Number.isFinite(result.p_blue)) throw new Error(result.error || 'Invalid model response');
+    if (request !== simRequest) return;
+    // Server step indices include blanks, matching the original draft positions.
+    simResult = result;
+    const model = result.model;
+    if (model) simNode('sim-meta').textContent = `Model: ${model.rows} game-sides · ${model.features} features · held-out R² ${model.r2 ?? 'n/a'} / next-patch ${model.r2_time ?? 'n/a'}. Champion identity explains only part of market draft movement. Card effects are changes to that team's win probability; feature terms below are model log-odds coefficients.`;
+  } catch (error){
+    if (request !== simRequest || error.name === 'AbortError') return;
+    simError = 'Draft estimate unavailable. ' + error.message; simPause();
+  } finally { if (request === simRequest){ simBusy = false; simRender(); } }
 }
-function simReset(){ simActions = simOrder.map(() => ''); simRoles = simOrder.map(() => ''); simRender(); }
-document.getElementById('sim-pre').addEventListener('change', simRun);
-simInit().catch(e => { document.getElementById('sim-meta').textContent = 'simulator unavailable: ' + e; });
+async function simStep(position){
+  simPause(); simCursor = Math.min(simOrder.length, Math.max(0, position)); await simRun();
+}
+async function simPlay(){
+  if (simPlaying){ simPause(); simRender(); return; }
+  if (!simActions.some(Boolean)) return;
+  simPlaying = true; const playback = ++simPlayback;
+  if (simCursor >= simOrder.length) simCursor = 0;
+  await simRun();
+  const advance = async () => {
+    if (!simPlaying || playback !== simPlayback) return;
+    simCursor++; await simRun();
+    if (!simPlaying || playback !== simPlayback) return;
+    if (simCursor >= simOrder.length){ simPause(); simRender(); }
+    else simTimer = setTimeout(advance, 1200);
+  };
+  if (simPlaying && playback === simPlayback) simTimer = setTimeout(advance, 1200);
+}
+function simReset(){
+  clearTimeout(simEditTimer);
+  simPause(); simActions = simOrder.map(() => ''); simRoles = simOrder.map(() => ''); simCursor = simOrder.length; simRun();
+}
+async function simInit(){
+  simRender();
+  const currentPatch = simNode('sim-patch').value;
+  const [champs, patches] = await Promise.allSettled([getJSON('/api/draft/champlist'), getJSON('/api/draft/patches')]);
+  if (champs.status === 'fulfilled' && Array.isArray(champs.value)){
+    // Model feature names include role/patch suffixes; the picker lists champions only.
+    const names = [...new Set(champs.value.map(value => value.split(/[#@]/, 1)[0]).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    simNode('champlist').replaceChildren(...names.map(value => el('option', {value})));
+    const canonical = new Map(names.map(value => [simNorm(value), value]));
+    simActions.forEach((value, i) => { simActions[i] = canonical.get(simNorm(value)) || value; });
+  }
+  if (patches.status === 'fulfilled' && Array.isArray(patches.value)){
+    const selected = simNode('sim-patch').value || currentPatch;
+    patches.value.forEach(value => { if (![...simNode('sim-patch').options].some(option => option.value === value)) simNode('sim-patch').appendChild(el('option', {value}, value)); });
+    if (selected) simNode('sim-patch').value = selected;
+  }
+  await simRun();
+}
+// Riot Data Dragon versions, champion metadata, and square assets: developer.riotgames.com/docs/lol#data-dragon
+async function simLoadPortraits(){
+  const base = 'https://ddragon.leagueoflegends.com';
+  const read = async url => { const response = await fetch(url); if (!response.ok) throw new Error('Image catalog unavailable'); return response.json(); };
+  const versions = await read(base + '/api/versions.json');
+  if (!Array.isArray(versions) || !versions.length) return;
+  const version = versions[0], catalog = await read(`${base}/cdn/${version}/data/en_US/champion.json`);
+  for (const champion of Object.values(catalog.data || {})){
+    const url = `${base}/cdn/${version}/img/champion/${encodeURIComponent(champion.image.full)}`;
+    simPortraits[simNorm(champion.name)] = url; simPortraits[simNorm(champion.id)] = url;
+  }
+  simRender();
+  lvRenderDraft();
+}
+simNode('sim-pre').addEventListener('change', () => { simPause(); simRun(); });
+simNode('sim-patch').addEventListener('change', () => { simPause(); simRun(); });
+simNode('sim-replay-toggle').addEventListener('click', simPlay);
+simNode('sim-replay-start').addEventListener('click', () => simStep(0));
+simNode('sim-replay-prev').addEventListener('click', () => simStep(simCursor - 1));
+simNode('sim-replay-next').addEventListener('click', () => simStep(simCursor + 1));
+simNode('sim-replay-end').addEventListener('click', () => simStep(simOrder.length));
+simInit().catch(error => { simError = 'Draft setup unavailable. ' + error.message; simRender(); });
+simLoadPortraits().catch(() => {});
 
 
 // ------------------------------------------------------- timeline alignment
 let alChart = null;
-const EVT_COLOR = {kill:'#d33', baron:'#7b3ff2', herald:'#e08b00', atakhan:'#b0187b',
-  tower:'#0aa5a5', inhib:'#444', nexus:'#000', grubs:'#5b7a1e', plate:'#aaa'};
-const evColor = a => a && a.startsWith('dragon') ? '#e08b00' : (EVT_COLOR[a] || '#888');
+const EVT_COLOR = {kill:'#ed8c9e', baron:'#b494f4', herald:'#e08b00', atakhan:'#b0187b',
+  tower:'#0aa5a5', inhib:'#8996ae', nexus:'#000', grubs:'#5b7a1e', plate:'#aaa'};
+const evColor = a => a && a.startsWith('dragon') ? '#e08b00' : (EVT_COLOR[a] || '#9aa9bf');
 async function alLoadList(){
   const games = await getJSON('/api/align/games');
   const sel = document.getElementById('al-game');
@@ -588,7 +1031,7 @@ async function alShow(){
   alChart = new Chart(document.getElementById('alchart'), {
     type: 'line',
     data: {datasets: [
-      {label: `${a.team} odds`, data: a.series.map(([t,p]) => ({x:t, y:p})), borderColor: plat === 'kalshi' ? '#0aa574' : '#1652f0',
+      {label: `${a.team} odds`, data: a.series.map(([t,p]) => ({x:t, y:p})), borderColor: plat === 'kalshi' ? '#6fdbb0' : '#8ab8ff',
        borderWidth: 1.5, pointRadius: 0, parsing: false, normalized: true, order: 2},
       {label: 'events', type: 'scatter', data: evs.map(e => ({x: e.wall_ts, y: e.p_after, e})),
        pointBackgroundColor: evs.map(e => evColor(e.action)), pointBorderColor: '#fff', pointBorderWidth: 1,
@@ -618,8 +1061,8 @@ async function alShow(){
     const at = el('td', {}, e.action); at.style.color = evColor(e.action); tr.appendChild(at);
     tr.appendChild(el('td', {}, (e.player || '') + (e.target ? ' → ' + e.target : '')));
     tr.appendChild(el('td', {}, e.p_before != null ? `${(e.p_before*100).toFixed(1)} → ${(e.p_after*100).toFixed(1)}%` : ''));
-    const d1 = el('td', {}, e.dp != null ? pp(e.dp) : ''); d1.style.color = e.dp > 0 ? '#0a7a44' : (e.dp < 0 ? '#c22' : '');
-    const d2 = el('td', {}, e.dp_actor != null ? pp(e.dp_actor) : ''); d2.style.color = e.dp_actor > 0 ? '#0a7a44' : (e.dp_actor < 0 ? '#c22' : '');
+    const d1 = el('td', {}, e.dp != null ? pp(e.dp) : ''); d1.style.color = e.dp > 0 ? '#6fdbb0' : (e.dp < 0 ? '#f7a2b4' : '');
+    const d2 = el('td', {}, e.dp_actor != null ? pp(e.dp_actor) : ''); d2.style.color = e.dp_actor > 0 ? '#6fdbb0' : (e.dp_actor < 0 ? '#f7a2b4' : '');
     tr.appendChild(d1); tr.appendChild(d2);
     tr.appendChild(el('td', {class:'muted'}, e.matched ? '✓' : ''));
     table.appendChild(tr);
@@ -633,8 +1076,8 @@ async function impactCompare(q){
   if (cmpChart) cmpChart.destroy();
   cmpChart = new Chart(document.getElementById('cmpchart'), {type: 'bar',
     data: {labels, datasets: [
-      {label: 'market swing (pp)', data: rows.map(r => r.market_mean == null ? null : +(r.market_mean*100).toFixed(2)), backgroundColor: '#1652f0'},
-      {label: 'outcome-model WPA (pp)', data: rows.map(r => r.model_mean == null ? null : +(r.model_mean*100).toFixed(2)), backgroundColor: '#0aa574'}]},
+      {label: 'market swing (pp)', data: rows.map(r => r.market_mean == null ? null : +(r.market_mean*100).toFixed(2)), backgroundColor: '#8ab8ff'},
+      {label: 'outcome-model WPA (pp)', data: rows.map(r => r.model_mean == null ? null : +(r.model_mean*100).toFixed(2)), backgroundColor: '#6fdbb0'}]},
     options: {animation: false, responsive: true, maintainAspectRatio: false,
       scales: {y: {title: {display: true, text: 'mean swing toward acting side (pp)'}}},
       plugins: {legend: {position: 'bottom'}, tooltip: {callbacks: {afterLabel: c => { const r = rows[c.dataIndex];
@@ -667,7 +1110,7 @@ alLoadList().catch(e => { document.getElementById('al-meta').textContent = 'unav
 
 
 // --------------------------------------------------------------- picker
-let PK = {trs: [], games: []};
+let PK = {trs: [], games: [], autoSelect: true};
 async function pkInit(){
   PK.trs = await getJSON('/api/picker/tournaments');
   const seasons = [...new Set(PK.trs.map(t => t.season))].sort().reverse();
@@ -687,6 +1130,10 @@ function pkLeagues(){
     const pri = r => ({KR:0, CN:1, EUW:2, NA:3, LTA:3, BR:4, VN:5, PCS:6, WR:7}[r] ?? 9);
     return pri(a) - pri(b) || regs[a].localeCompare(regs[b]); });
   order.forEach(r => ls.appendChild(el('option', {value: r}, regs[r])));
+  if (PK.autoSelect) {
+    const latest = PK.trs.filter(t => t.season === season && t.scraped > 0).sort((a, b) => (b.last_game || '').localeCompare(a.last_game || ''))[0];
+    if (latest) ls.value = latest.region;
+  }
   ls.onchange = pkTournaments;
   pkTournaments();
 }
@@ -710,12 +1157,13 @@ async function pkGames(){
   if (!trname) return;
   PK.games = await getJSON('/api/picker/games?trname=' + encodeURIComponent(trname));
   if (!PK.games.length){ box.innerHTML = '<p class="muted">no games scraped yet for this tournament (the gol.gg scrape is still running)</p>'; return; }
-  meta.textContent = `${PK.games.length} games · click a game to load its odds markets and timeline`;
+  meta.textContent = `${PK.games.length} games available · Choose a game to load its draft, odds, and timeline.`;
   const table = el('table'); const hdr = el('tr');
   ['date','game','blue','red','winner','length','patch','odds','timeline'].forEach(h => hdr.appendChild(el('th', {}, h)));
   table.appendChild(hdr);
   for (const g of PK.games){
-    const tr = el('tr', {class: 'game'});
+    const tr = el('tr', {class: 'game', tabindex: '0', 'data-game-id': g.game_id, 'aria-label': `${g.blue_team} vs ${g.red_team}, game ${g.game_num}, ${g.date}`});
+    tr.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pkOpen(g); } });
     tr.appendChild(el('td', {}, g.date || ''));
     tr.appendChild(el('td', {}, 'G' + g.game_num));
     const bt = el('td', {}, g.blue_team); if (g.winner_side === 'blue') bt.style.fontWeight = '600';
@@ -730,9 +1178,15 @@ async function pkGames(){
     table.appendChild(tr);
   }
   box.appendChild(table);
+  if (PK.autoSelect && !SEL) {
+    PK.autoSelect = false;
+    const latest = [...PK.games].sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.game_id - a.game_id)[0];
+    if (latest) selectGame(latest.game_id).catch(() => { meta.textContent = 'Game could not be loaded. Choose another game to try again.'; setBrowserOpen(true); });
+  }
 }
 // ---------------------------------------------------- page-wide selection
 let SEL = null;              // selected game context (from /api/picker/game)
+let selectionRequest = 0;
 let SEL_TEAMS = [];          // normalized team names to highlight in tables
 const normT = x => String(x || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\b(esports?|e-sports|gaming|team|club|gg)\b/g, '').replace(/\s+/g, ' ').trim();
 function draftOrderFill(d){
@@ -750,14 +1204,26 @@ function draftOrderFill(d){
   const fix = c => c ? (canon[String(c).toLowerCase().replace(/[^a-z0-9]/g, '')] || c) : '';
   simActions = seq.map(fix);
   const roleOf = {};
-  (d.players || []).forEach(p => { roleOf[p.side + '|' + fix(p.champion)] = (p.role || '').toLowerCase()
+  (d.players || []).forEach(p => { roleOf[p.side + '|' + simNorm(p.champion)] = (p.role || '').toLowerCase()
     .replace('jungle', 'jng').replace('support', 'sup').replace('adc', 'bot').replace('middle', 'mid'); });
-  simRoles = seq.map((c, i) => simOrder[i][1] === 'pick' && c ? (roleOf[sides[i] + '|' + fix(c)] || '') : '');
+  simRoles = seq.map((c, i) => simOrder[i][1] === 'pick' && c ? (roleOf[sides[i] + '|' + simNorm(c)] || '') : '');
 }
 async function selectGame(gameId){
+  const request = ++selectionRequest;
   const d = await getJSON('/api/picker/game?game_id=' + gameId);
-  if (d.error) return;
+  if (request !== selectionRequest) return;
+  if (d.error) throw new Error(d.error);
   SEL = d; SEL_TEAMS = [normT(d.blue_team), normT(d.red_team)];
+  updateDraftContext(d); setBrowserOpen(false);
+  // Load the draft immediately; historical charts can resolve independently.
+  draftOrderFill(d);
+  const ps = document.getElementById('sim-patch');
+  if (d.patch && ![...ps.options].some(o => o.value === d.patch)) ps.appendChild(el('option', {value: d.patch}, d.patch));
+  ps.value = d.patch || '';
+  const pre = d.pre_blue_market ?? d.pre_blue_elo ?? 0.5;
+  document.getElementById('sim-pre').value = Math.round(pre * 100);
+  simRun();
+
   const b = document.getElementById('sel-banner');
   b.style.display = 'block';
   b.innerHTML = '';
@@ -768,9 +1234,9 @@ async function selectGame(gameId){
   b.appendChild(document.createTextNode(` (red) · patch ${d.patch || '?'} · league ${d.oe_league || '?'}` +
     (d.pre_blue_market != null ? ` · market pre-draft blue ${(d.pre_blue_market*100).toFixed(0)}%` : '') +
     (d.pre_blue_elo != null ? ` · Elo blue ${(d.pre_blue_elo*100).toFixed(0)}%` : '') +
-    ' — all sections below now reflect this game. '));
+    ' · All workspaces use this game. '));
   const clr = el('button', {style: 'font-size:12px;padding:2px 8px'}, 'clear');
-  clr.addEventListener('click', () => { SEL = null; SEL_TEAMS = []; b.style.display = 'none'; });
+  clr.addEventListener('click', newDraft);
   b.appendChild(clr);
   // odds chart + markets
   const evs = d.events || [];
@@ -783,7 +1249,8 @@ async function selectGame(gameId){
       tr.addEventListener('click', () => openGame(plat, ev)); table.appendChild(tr);
     }
     res.appendChild(table);
-    await openGame(evs[0][0], evs[0][1]);
+    await openGame(evs[0][0], evs[0][1], request);
+    if (request !== selectionRequest) return;
     const want = new RegExp('(game|map) ' + d.game_num + '\\b', 'i');
     [...document.querySelectorAll('#markets label')].forEach(l => {
       if (want.test(l.textContent) && /winner|win map/i.test(l.textContent)) { const cb = l.querySelector('input'); if (cb && !cb.checked) cb.click(); } });
@@ -815,18 +1282,10 @@ async function selectGame(gameId){
   eventImpact().catch(() => {});
   wpImpact().catch(() => {});
   draftFree().catch(() => {});
-  // draft simulator: the game's real draft
-  if (simOrder){
-    draftOrderFill(d);
-    const ps = document.getElementById('sim-patch');
-    if (d.patch && [...ps.options].some(o => o.value === d.patch)) ps.value = d.patch;
-    const pre = d.pre_blue_market != null ? d.pre_blue_market : (d.pre_blue_elo != null ? d.pre_blue_elo : 0.5);
-    document.getElementById('sim-pre').value = Math.round(pre * 100);
-    simRun().catch(() => {});
-  }
 }
 async function pkOpen(g){
-  return selectGame(g.game_id);
+  try { await selectGame(g.game_id); }
+  catch (error) { document.getElementById('pk-meta').textContent = 'Game could not be loaded: ' + error.message; setBrowserOpen(true); }
 }
 async function pkOpen_legacy(g){
   // odds chart: open the first platform event with markets; list both in results
@@ -878,7 +1337,7 @@ async function wpShow(gameId){
   if (wpChart) wpChart.destroy();
   wpChart = new Chart(document.getElementById('wpchart'), {type: 'line',
     data: {datasets: [
-      {label: 'blue WP', data: d.curve.map(([t,p]) => ({x: t/60, y: p})), borderColor: '#1652f0', borderWidth: 1.5, pointRadius: 0, parsing: false},
+      {label: 'blue WP', data: d.curve.map(([t,p]) => ({x: t/60, y: p})), borderColor: '#8ab8ff', borderWidth: 1.5, pointRadius: 0, parsing: false},
       {label: 'events', type: 'scatter', data: evs.map(e => ({x: e.time_s/60, y: e.wp_after, e})),
        pointBackgroundColor: evs.map(e => evColor(e.action)), pointBorderColor: '#fff', pointBorderWidth: 1,
        pointRadius: evs.map(e => e.action === 'kill' ? 3.5 : 5.5), parsing: false}]},
@@ -929,10 +1388,10 @@ async function wpCalibration(){
     borderDash: dash || [], pointRadius: bins.filter(b => b.n).map(b => Math.max(3, Math.min(9, Math.sqrt(b.n)/6))),
     data: bins.filter(b => b.n).map(b => ({x: b.mean_pred, y: b.obs_freq, n: b.n}))});
   const ds = [{label: 'perfect', borderColor: '#bbb', borderDash: [6,4], pointRadius: 0, data: [{x:0,y:0},{x:1,y:1}], showLine: true},
-              mk(`model, held-out states (Brier ${d.model.overall.brier})`, d.model.overall.bins, '#0aa574')];
+              mk(`model, held-out states (Brier ${d.model.overall.brier})`, d.model.overall.bins, '#6fdbb0')];
   const rows = [{src: 'model · held-out states', n: d.model.overall.n, brier: d.model.overall.brier, logloss: d.model.overall.logloss}];
   for (const [ph, v] of Object.entries(d.model.by_phase)) rows.push({src: `model · ${ph}`, n: v.n, brier: v.brier, logloss: v.logloss});
-  const colors = {polymarket: '#1652f0', kalshi: '#7b3ff2'};
+  const colors = {polymarket: '#8ab8ff', kalshi: '#b494f4'};
   for (const [plat, v] of Object.entries(d.vs_market)){
     ds.push(mk(`${plat} market (Brier ${v.market.brier})`, v.market.bins, colors[plat]));
     ds.push(mk(`model @ same ${plat} points (Brier ${v.model_same_points.brier})`, v.model_same_points.bins, colors[plat], [4,3]));
@@ -1060,7 +1519,7 @@ async function wpxResults(){
     {h: 'late', key: 'm_late', num: true, f: r => f4(r.m_late) + ' / ' + f4(r.d_late)},
     {h: '50/50 blend', key: 'blend', num: true, f: r => f4(r.blend)}]);
   // in this table, negative diff (model better) should read green: flip the colouring
-  [...document.querySelectorAll('#wpx-fair tr')].forEach(tr => { const td = tr.children[4]; if (td && td.style.color){ td.style.color = td.textContent.startsWith('-') ? '#0a7a44' : '#c22'; } });
+  [...document.querySelectorAll('#wpx-fair tr')].forEach(tr => { const td = tr.children[4]; if (td && td.style.color){ td.style.color = td.textContent.startsWith('-') ? '#6fdbb0' : '#f7a2b4'; } });
 }
 
 async function shadowResults(){
@@ -1101,6 +1560,95 @@ async function shadowResults(){
 
 // ------------------------------------------------------------- live game
 let lvChart = null, lvHist = [], lvMk = [], lvMkLastQ = 0, lvTimer = null, lvCurrent = null, lvSince = 0, lvBusy = false, lvStartTs = null, lvBlend = null, lvBlendStatus = null;
+let lvDraftData = null, lvDraftMessage = 'Checking the live schedule…', lvDraftSlots = [];
+const lvDraftRoles = ['top', 'jng', 'mid', 'bot', 'sup'];
+const lvRole = role => ({jungle:'jng', bottom:'bot', adc:'bot', support:'sup', middle:'mid'}[String(role || '').toLowerCase()] || String(role || '').toLowerCase());
+function lvDraftPlayers(data, side){
+  const players = (data?.lineup || data?.scoreboard || []).filter(player => player.side === side && player.champion)
+    .map(player => ({...player, role:lvRole(player.role)}));
+  const slots = lvDraftRoles.map(role => players.find(player => player.role === role));
+  const unplaced = players.filter(player => !slots.includes(player));
+  for (const champion of data?.[side + '_champs'] || []){
+    if (!champion || players.some(player => simNorm(player.champion) === simNorm(champion))) continue;
+    // Champion arrays do not carry role or pick-order information.
+    unplaced.push({champion, player:'', role:''});
+  }
+  return slots.map((player, i) => player || unplaced.shift() || {champion:'', player:'', role:lvDraftRoles[i]});
+}
+function lvBuildDraft(){
+  lvDraftSlots = [];
+  for (const side of ['blue','red']){
+    const box = document.getElementById(`lv-draft-${side}-picks`);
+    box.replaceChildren();
+    for (let i = 0; i < 5; i++){
+      const card = el('div', {class:'pick-card is-empty'});
+      const portrait = el('div', {class:'champion-portrait'});
+      const image = el('img', {alt:'', loading:'eager', decoding:'async'});
+      const fallback = el('span', {class:'portrait-fallback', 'aria-hidden':'true'}, '◇');
+      image.hidden = true; portrait.append(image, fallback);
+      image.addEventListener('load', () => { if (image.dataset.url) { image.hidden = false; fallback.hidden = true; } });
+      image.addEventListener('error', () => { image.hidden = true; fallback.hidden = false; });
+      const identity = el('div', {class:'pick-identity'}), champion = el('div', {class:'live-pick-name'}), player = el('div', {class:'live-pick-player'});
+      identity.append(champion, player);
+      const role = el('span', {class:'pick-tag live-pick-role'});
+      card.append(portrait, identity, role); box.appendChild(card);
+      lvDraftSlots.push({side, index:i, card, image, fallback, champion, player, role, action:'pick'});
+    }
+  }
+}
+function lvUpdateDraft(data){
+  const previous = lvDraftData;
+  const changedLineup = ['blue_champs','red_champs'].some(key => data[key]?.length && previous?.[key]?.length && data[key].join('|') !== previous[key].join('|'));
+  const sameGame = previous && String(previous.game?.game_id) === String(data.game?.game_id)
+    && !(data.game_start_ts && previous.game_start_ts && data.game_start_ts !== previous.game_start_ts)
+    && !changedLineup;
+  lvDraftData = {...(sameGame ? previous : {}), ...data,
+    note:data.note || '',
+    scoreboard:data.scoreboard ?? (sameGame ? previous.scoreboard : []),
+    latestFrame:data.frames?.at(-1) ?? (sameGame ? previous.latestFrame : null)};
+  lvDraftMessage = '';
+  lvRenderDraft();
+}
+function lvClearDraft(message, game = null){
+  lvDraftData = game ? {game, scoreboard:[], blue_champs:[], red_champs:[], latestFrame:null} : null;
+  lvDraftMessage = message; lvRenderDraft();
+}
+function lvResetSelection(game){
+  lvHist = []; lvMk = []; lvMkLastQ = 0; lvSince = 0; lvCurrent = null; lvStartTs = null; lvBlend = null; lvBlendStatus = null;
+  document.getElementById('lv-box').style.display = 'none';
+  lvClearDraft('Waiting for the live-stats feed…', game);
+}
+function lvRenderDraft(){
+  if (!lvDraftSlots.length) lvBuildDraft();
+  const data = lvDraftData, game = data?.game, frame = data?.latestFrame;
+  const formatProbability = (value, side) => Number.isFinite(value) && value >= 0 && value <= 1 ? ((side === 'blue' ? value : 1 - value) * 100).toFixed(1) + '%' : '—';
+  for (const [index, side] of ['blue','red'].entries()){
+    document.getElementById(`lv-draft-${side}-name`).textContent = game?.teams?.[index] || (side === 'blue' ? 'Blue team' : 'Red team');
+    document.getElementById(`lv-draft-${side}-state`).textContent = formatProbability(frame?.p_blue_no_champ, side);
+    document.getElementById(`lv-draft-${side}-prob`).textContent = formatProbability(frame?.p_blue, side);
+    const players = lvDraftPlayers(data, side);
+    lvDraftSlots.filter(slot => slot.side === side).forEach(slot => {
+      const player = players[slot.index], role = simRoleNames[player.role];
+      slot.champion.textContent = player.champion || 'Awaiting champion';
+      slot.champion.classList.toggle('live-pick-waiting', !player.champion);
+      slot.player.textContent = player.player || (player.champion ? 'Player not provided' : 'Waiting for the live feed');
+      slot.role.textContent = role || '—'; slot.role.title = role || 'Role not provided by the live feed';
+      slot.card.classList.toggle('is-empty', !player.champion);
+      simPortrait(slot, player.champion);
+    });
+  }
+  document.getElementById('lv-draft-context').textContent = game
+    ? `${game.league || 'Live game'} / Game ${game.number || '—'}${data.patch ? ' / ' + data.patch : ''}` : 'Waiting for a live game';
+  const probability = frame?.p_blue, available = Number.isFinite(probability) && probability >= 0 && probability <= 1;
+  const fill = document.getElementById('lv-draft-prob-fill');
+  fill.style.width = (available ? probability * 100 : 50) + '%'; fill.parentElement.classList.toggle('is-unknown', !available);
+  const seconds = frame?.clock_s;
+  document.getElementById('lv-draft-clock').textContent = Number.isFinite(seconds)
+    ? `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}${frame.game_state === 'paused' ? ' · Paused' : frame.game_state === 'finished' ? ' · Final' : ''}` : 'Game clock —';
+  document.getElementById('lv-draft-status').textContent = lvDraftMessage || data?.note || (frame
+    ? `Lineup from the live feed${Number.isFinite(data.feed_lag_s) ? ' · ' + data.feed_lag_s + 's behind real time' : ''}` : 'Waiting for the live-stats feed to publish the draft.');
+}
+lvRenderDraft();
 async function lvList(){
   const sel = document.getElementById('lv-game');
   let games = [];
@@ -1108,23 +1656,37 @@ async function lvList(){
   if (!Array.isArray(games)) games = [];
   const prev = sel.value;
   sel.innerHTML = '';
-  if (!games.length){ sel.appendChild(el('option', {value: ''}, 'no LoL Esports game in progress right now')); document.getElementById('lv-box').style.display = 'none'; return; }
+  if (!games.length){ sel.appendChild(el('option', {value: ''}, 'no LoL Esports game in progress right now')); document.getElementById('lv-box').style.display = 'none'; lvClearDraft('No live game right now. The draft will appear when a game starts.'); return; }
   games.forEach(g => sel.appendChild(el('option', {value: g.game_id}, `${g.league}: ${g.teams.join(' vs ')} — game ${g.number}`)));
   if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
-  sel.onchange = () => { lvHist = []; lvMk = []; lvMkLastQ = 0; lvSince = 0; lvCurrent = null; lvBlend = null; lvBlendStatus = null; lvRefresh(); };
+  if (sel.value !== prev) lvResetSelection(games.find(game => String(game.game_id) === sel.value));
+  sel.onchange = () => { lvResetSelection(games.find(game => String(game.game_id) === sel.value)); lvRefresh(); };
 }
 function lvEnsureChart(){
   if (lvChart) return;
   lvChart = new Chart(document.getElementById('lvchart'), {type: 'line', data: {datasets: [
-    {label: 'model', borderColor: '#1652f0', data: [], pointRadius: 0, borderWidth: 1.5},
+    {label: 'model', borderColor: '#8ab8ff', data: [], pointRadius: 0, borderWidth: 1.5},
     {label: 'model (state-only)', borderColor: '#9db4f5', borderDash: [4,3], data: [], pointRadius: 0, borderWidth: 1},
-    {label: 'kalshi', borderColor: '#0aa574', data: [], pointRadius: 2, borderWidth: 1.5, spanGaps: true, stepped: true},
-    {label: 'polymarket', borderColor: '#7b3ff2', data: [], pointRadius: 2, borderWidth: 1.5, spanGaps: true, stepped: true}]},
+    {label: 'kalshi', borderColor: '#6fdbb0', data: [], pointRadius: 2, borderWidth: 1.5, spanGaps: true, stepped: true},
+    {label: 'polymarket', borderColor: '#b494f4', data: [], pointRadius: 2, borderWidth: 1.5, spanGaps: true, stepped: true}]},
     options: {animation: false, responsive: true, maintainAspectRatio: false, parsing: false, normalized: true,
       scales: {x: {type: 'linear', title: {display: true, text: 'game minute'}}, y: {min: 0, max: 1, title: {display: true, text: 'P(blue)'}}},
       plugins: {legend: {position: 'right', labels: {boxWidth: 10, font: {size: 11}}}, zoom: ZOOM_OPTS,
         tooltip: {callbacks: {title: items => { const m = items[0].parsed.x; return Math.floor(m) + ':' + String(Math.round((m % 1) * 60)).padStart(2, '0'); }}}}}});
   wireDblClick('lvchart', () => lvChart);
+}
+function lvRenderChart(){
+  const adjusted = document.getElementById('lv-market-adjust').checked;
+  const latest = lvMk[lvMk.length - 1];
+  document.getElementById('lv-market-timing').textContent = adjusted
+    ? `Market quotes shown ahead ${latest ? 'by ' + latest.lead_s + ' s' : 'by the measured feed delay'}.`
+    : 'Market quotes aligned with the current live feed clock (no adjustment).';
+  if (!lvChart) return;
+  lvChart.data.datasets[0].data = lvHist.map(h => ({x: h.t, y: h.model}));
+  lvChart.data.datasets[1].data = lvHist.map(h => ({x: h.t, y: h.model0}));
+  lvChart.data.datasets[2].data = lvMk.filter(h => h.kalshi != null).map(h => ({x: adjusted ? h.x : h.feed_x, y: h.kalshi}));
+  lvChart.data.datasets[3].data = lvMk.filter(h => h.polymarket != null).map(h => ({x: adjusted ? h.x : h.feed_x, y: h.polymarket}));
+  lvChart.update();
 }
 async function lvRefresh(){
   if (lvBusy) return;
@@ -1132,12 +1694,21 @@ async function lvRefresh(){
   if (!gid) { await lvList(); if (!document.getElementById('lv-game').value) return; }
   lvBusy = true;
   const meta = document.getElementById('lv-meta');
+  const requestedGame = document.getElementById('lv-game').value;
   let d;
-  try { d = await getJSON(`/api/live/series?game_id=${encodeURIComponent(document.getElementById('lv-game').value)}&since=${lvSince}`); }
-  catch (e) { meta.textContent = 'connection hiccup (' + (e.message || e) + ') — retrying on next tick'; lvBusy = false; return; }
+  try { d = await getJSON(`/api/live/series?game_id=${encodeURIComponent(requestedGame)}&since=${lvSince}`); }
+  catch (e) {
+    lvBusy = false;
+    if (requestedGame !== document.getElementById('lv-game').value) { lvRefresh(); return; }
+    meta.textContent = 'connection hiccup (' + (e.message || e) + ') — retrying on next tick';
+    lvDraftMessage = lvDraftData?.latestFrame ? 'Live feed unavailable · showing the last received lineup' : 'Live feed unavailable · waiting for lineup data';
+    lvRenderDraft(); return;
+  }
   lvBusy = false;
+  if (requestedGame !== document.getElementById('lv-game').value) { lvRefresh(); return; }
   if (d.error){
     meta.textContent = d.error;
+    lvDraftMessage = d.error; lvRenderDraft();
     if (/no in-progress game/.test(d.error)){   // selected game ended -> hop to the current one
       await lvList();
       const sel = document.getElementById('lv-game');
@@ -1153,16 +1724,22 @@ async function lvRefresh(){
     document.getElementById('lv-meta').textContent = 'game remade — chart reset for the new draft';
   }
   if (d.game_start_ts) lvStartTs = d.game_start_ts;
+  lvUpdateDraft(d);
+  const mk = d.markets || {};
+  const mkAge = d.markets_age_s;
+  const mkStale = mkAge == null || mkAge > 20;
+  const mkParts = ['kalshi','polymarket'].filter(k => mk[k]).map(k => `${k} ${(mk[k].p_blue*100).toFixed(0)}%${mk[k].source === 'series' ? ' (series mkt)' : ''}${mk[k].stale ? ' (cached px)' : ''}${mk[k].settled ? ' (settled)' : ''}`);
+  const mkTxt = mkParts.length ? mkParts.join(' · ')
+      + (mkAge != null ? ` <span class="muted"${mkStale ? ' style="color:#f7a2b4"' : ''}>(quotes ${mkAge.toFixed(0)}s old${mkStale ? ' — STALE' : ''}${lvMk.length ? ', ' + lvMk[lvMk.length-1].lead_s + 's ahead of the feed' : ''})</span>` : '') : '';
   if (d.note && !d.frames.length){
     meta.textContent = d.note + ' — ' + new Date(d.ts*1000).toISOString().slice(11,19) + 'Z';
     document.getElementById('lv-box').style.display = 'block';
-    if (!lvHist.length){ document.getElementById('lv-line').innerHTML = `<b>${g.teams[0]}</b> (blue) vs <b>${g.teams[1]}</b> (red) · game ${g.number} — waiting for the live-stats feed…`; return; }
+    if (!lvHist.length){ document.getElementById('lv-line').innerHTML = `<b>${g.teams[0]}</b> (blue) vs <b>${g.teams[1]}</b> (red) · game ${g.number} — waiting for the live-stats feed…` + (mkTxt ? ` · market P(${g.teams[0]}): ${mkTxt}` : ' · market: waiting for exchange quotes…'); return; }
     // feed is lagging but we already have history: fall through so the (real-time) market quotes keep advancing
   }
   const lagNote = (d.note && !d.frames.length) ? d.note : null;
   document.getElementById('lv-box').style.display = 'block';
   lvEnsureChart();
-  const mk = d.markets || {};
   if (d.blend) lvBlend = d.blend;
   if (d.blend_status) lvBlendStatus = d.blend_status;
   for (const f of d.frames){
@@ -1179,7 +1756,7 @@ async function lvRefresh(){
       lvMkLastQ = qTime;
       const paused = last.st.game_state === 'paused';
       const lead = paused ? 0 : Math.max(0, qTime - (d.frame_ts || last.st.ts)) / 60;
-      lvMk.push({x: last.t + lead, lead_s: Math.round(lead * 60), kalshi: mk.kalshi ? mk.kalshi.p_blue : null, polymarket: mk.polymarket ? mk.polymarket.p_blue : null});
+      lvMk.push({x: last.t + lead, feed_x: last.t, lead_s: Math.round(lead * 60), kalshi: mk.kalshi ? mk.kalshi.p_blue : null, polymarket: mk.polymarket ? mk.polymarket.p_blue : null});
     }
     const st = last.st;
     const scoredDead = [Number(st.dead_blue || 0), Number(st.dead_red || 0)];
@@ -1189,11 +1766,6 @@ async function lvRefresh(){
     ] : scoredDead;
     const deadMismatch = d.frame_ts === st.ts && (scoredDead[0] !== boardDead[0] || scoredDead[1] !== boardDead[1]);
     const clock = `${Math.floor(st.clock_s/60)}:${String(st.clock_s%60).padStart(2,'0')}`;
-    const mkAge = d.markets_age_s;
-    const mkStale = mkAge == null || mkAge > 20;
-    const mkParts = ['kalshi','polymarket'].filter(k => mk[k]).map(k => `${k} ${(mk[k].p_blue*100).toFixed(0)}%${mk[k].source === 'series' ? ' (series mkt)' : ''}${mk[k].stale ? ' (cached px)' : ''}${mk[k].settled ? ' (settled)' : ''}`);
-    const mkTxt = mkParts.length ? mkParts.join(' · ')
-      + (mkAge != null ? ` <span class="muted"${mkStale ? ' style="color:#c00"' : ''}>(quotes ${mkAge.toFixed(0)}s old${mkStale ? ' — STALE' : ''}${lvMk.length ? ', ' + lvMk[lvMk.length-1].lead_s + 's ahead of the feed' : ''})</span>` : '') : '';
     let blendTxt = '';
     if (lvBlend){
       blendTxt = ` · historical blend <b style="color:#7a3db8">P(${g.teams[0]}) = ${(lvBlend.p_blue*100).toFixed(1)}%</b> <span class="muted">(past odds only; no live-odds input)</span>`;
@@ -1201,7 +1773,7 @@ async function lvRefresh(){
       const delta = lvBlendStatus.holdout_blend_minus_model;
       blendTxt = ` · <span class="muted">historical blend not deployed${delta == null ? '' : ` (holdout Brier ${delta >= 0 ? '+' : ''}${delta.toFixed(5)} vs model)`}; model remains independent</span>`;
     }
-    const terminalTxt = st.terminal_state ? ` · <b style="color:#c22">late mass-death state</b>` : '';
+    const terminalTxt = st.terminal_state ? ` · <b style="color:#f7a2b4">late mass-death state</b>` : '';
     const rosterWarn = [];
     let anyAdjusted = false, anyUnadjusted = false;
     for (const [side, teamName] of [['blue', g.teams[0]], ['red', g.teams[1]]]){
@@ -1220,10 +1792,10 @@ async function lvRefresh(){
     const rosterNote = anyUnadjusted ? 'Elo/form prior may be stale'
       : 'player-Elo prior adjusted for the on-rift lineup';
     const rosterTxt = rosterWarn.length
-      ? ` · <b style="color:${anyUnadjusted ? '#c60' : '#976f00'}">roster change vs last rated game — ${rosterWarn.join('; ')} (${rosterNote})</b>` : '';
+      ? ` · <b style="color:${anyUnadjusted ? '#e8c570' : '#e8c570'}">roster change vs last rated game — ${rosterWarn.join('; ')} (${rosterNote})</b>` : '';
     document.getElementById('lv-line').innerHTML =
       `<b>${g.teams[0]}</b> (blue) vs <b>${g.teams[1]}</b> (red) · game ${g.number} · ${clock}${st.game_state === 'finished' ? ' · <b>FINAL</b>' : (st.game_state === 'paused' ? ' · PAUSED' : '')} — ` +
-      `model <b style="color:#1652f0">P(${g.teams[0]}) = ${(st.p_blue*100).toFixed(1)}%</b> ` +
+      `model <b style="color:#8ab8ff">P(${g.teams[0]}) = ${(st.p_blue*100).toFixed(1)}%</b> ` +
       `<span class="muted">(same model, champions removed ${(st.p_blue_no_champ*100).toFixed(1)}%)</span>` +
       (mkTxt ? ` · market: ${mkTxt}` : ' · market: n/a (no map market listed)') + blendTxt + terminalTxt + rosterTxt;
     const stateEl = document.getElementById('lv-state');
@@ -1251,15 +1823,11 @@ async function lvRefresh(){
       (st.lo_prior != null ? ` · log-odds: prior ${st.lo_prior >= 0 ? '+' : ''}${st.lo_prior.toFixed(2)} · state ${st.lo_state >= 0 ? '+' : ''}${st.lo_state.toFixed(2)} · champs ${st.lo_champ >= 0 ? '+' : ''}${st.lo_champ.toFixed(2)} · time ${st.lo_time >= 0 ? '+' : ''}${st.lo_time.toFixed(2)}` : '') +
       (st.model_kind ? ` · ${st.model_kind}` : '') +
       ` · ${lvHist.length} frames (1 Hz) · feed lag ${d.feed_lag_s != null ? d.feed_lag_s + ' s' : '?'} (≥35 s is the feed's minimum)`;
-    stateEl.style.color = deadMismatch ? '#c22' : '';
+    stateEl.style.color = deadMismatch ? '#f7a2b4' : '';
   }
   meta.textContent = (lagNote ? lagNote + ' · ' : 'updated ') + new Date(d.ts*1000).toISOString().slice(11,19) + 'Z (+' + d.frames.length + ' frames)';
   lvScoreboard(d, g);
-  lvChart.data.datasets[0].data = lvHist.map(h => ({x: h.t, y: h.model}));
-  lvChart.data.datasets[1].data = lvHist.map(h => ({x: h.t, y: h.model0}));
-  lvChart.data.datasets[2].data = lvMk.filter(h => h.kalshi != null).map(h => ({x: h.x, y: h.kalshi}));
-  lvChart.data.datasets[3].data = lvMk.filter(h => h.polymarket != null).map(h => ({x: h.x, y: h.polymarket}));
-  lvChart.update();
+  lvRenderChart();
 }
 
 function lvScoreboard(d, g){
@@ -1267,7 +1835,7 @@ function lvScoreboard(d, g){
   const T = d.totals || {};
   const tl = (side, name) => { const t = T[side] || {}; return `<b>${name}</b>: ${t.totalGold != null ? (t.totalGold/1000).toFixed(1)+'k gold' : ''} · ${t.totalKills ?? '?'} kills · ${t.towers ?? '?'} towers · ${t.inhibitors ?? 0} inhib · ${t.barons ?? 0} baron · dragons ${(t.dragons||[]).length}${(t.dragons||[]).length ? ' ['+t.dragons.join(',')+']' : ''}`; };
   document.getElementById('lv-totals').innerHTML =
-    `<span style="color:#1652f0">${tl('blue', g.teams[0])}</span><br><span style="color:#c22">${tl('red', g.teams[1])}</span>` +
+    `<span style="color:#8ab8ff">${tl('blue', g.teams[0])}</span><br><span style="color:#f7a2b4">${tl('red', g.teams[1])}</span>` +
     `<span class="muted"> · scoreboard frame ${new Date(d.frame_ts*1000).toISOString().slice(11,19)}Z</span>`;
   for (const side of ['blue','red']){
     const box = document.getElementById(side === 'blue' ? 'lv-sb-blue' : 'lv-sb-red');
@@ -1287,7 +1855,7 @@ function lvScoreboard(d, g){
       tr.appendChild(el('td', {}, p.gold != null ? (p.gold/1000).toFixed(1) + 'k' : ''));
       const hp = (p.hp != null && p.max_hp) ? Math.round(100 * p.hp / p.max_hp) : null;
       const hpTd = el('td', {}, hp != null ? (p.alive ? hp + '%' : 'dead') : '');
-      if (hp != null && p.alive) hpTd.style.color = hp < 30 ? '#c22' : (hp < 60 ? '#b80' : '#0a7a44');
+      if (hp != null && p.alive) hpTd.style.color = hp < 30 ? '#f7a2b4' : (hp < 60 ? '#e8c570' : '#6fdbb0');
       tr.appendChild(hpTd);
       const itemsTd = el('td', {class: 'muted', style: 'font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px', title: (p.items || []).join(', ')},
         (p.items || []).filter(i => !/Ward|Lens|Potion|Trinket/i.test(i)).join(', '));
@@ -1307,6 +1875,8 @@ document.getElementById('lv-int').addEventListener('change', lvSchedule);
 lvList().then(() => { lvRefresh().catch(() => {}); lvSchedule(); setInterval(lvList, 120000); });
 
 function clearChart(){
+  document.getElementById('chartbox').classList.remove('has-data');
+  document.querySelectorAll('#markets input[type=checkbox]').forEach(cb => { cb.checked = false; });
   if (chart){ chart.data.datasets = []; chart.update(); }
   colorIdx = 0; outageSpans = []; gameStart = null;
   document.getElementById('outages').innerHTML = '';
@@ -1344,7 +1914,7 @@ function renderDT(id){
     const active = st.sortKey === c.key;
     const th = el('th', {style: 'cursor:pointer;white-space:nowrap', title: 'sort'},
       c.h + (active ? (st.sortDir === 'desc' ? ' ▼' : ' ▲') : ' ⇅'));
-    if (!active) th.style.color = '#666';
+    if (!active) th.style.color = '#9aa9bf';
     th.addEventListener('click', () => {
       if (st.sortKey === c.key) st.sortDir = st.sortDir === 'desc' ? 'asc' : 'desc';
       else { st.sortKey = c.key; st.sortDir = 'desc'; }
@@ -1359,14 +1929,14 @@ function renderDT(id){
       tr.appendChild(el('td', {class: 'muted', colspan: String(st.cols.length)}, '⋯'));
     } else {
       const first = String(st.cols[0].f(r) || '');
-      if (SEL_TEAMS.length && SEL_TEAMS.some(t => t && normT(first).includes(t))) tr.style.background = '#eef3ff';
+      if (SEL_TEAMS.length && SEL_TEAMS.some(t => t && normT(first).includes(t))) tr.style.background = '#182b48';
       st.cols.forEach(c => {
         const v = c.f(r);
         const td = el('td', {}, v);
         if (c.color){
           const x = parseFloat(v);
-          if (x > 0) td.style.color = '#0a7a44';
-          if (x < 0) td.style.color = '#c22';
+          if (x > 0) td.style.color = '#6fdbb0';
+          if (x < 0) td.style.color = '#f7a2b4';
         }
         tr.appendChild(td);
       });
@@ -1439,8 +2009,8 @@ async function calibrate(){
   const diag = {label: 'perfect', borderColor: '#bbb', borderDash: [6,4],
                 pointRadius: 0, data: [{x:0,y:0},{x:1,y:1}], showLine: true};
   const ds = [diag];
-  if (d.polymarket.n) ds.push(mk('polymarket', '#1652f0'));
-  if (d.kalshi.n) ds.push(mk('kalshi', '#0aa574'));
+  if (d.polymarket.n) ds.push(mk('polymarket', '#8ab8ff'));
+  if (d.kalshi.n) ds.push(mk('kalshi', '#6fdbb0'));
   if (calChart) calChart.destroy();
   calChart = new Chart(document.getElementById('calchart'), {
     type: 'scatter', data: {datasets: ds},

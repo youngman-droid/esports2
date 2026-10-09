@@ -12,12 +12,41 @@ import time
 import urllib.parse
 import urllib.request
 import urllib.error
+from copy import deepcopy
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import numpy as np
 
 from . import config
 
 log = logging.getLogger("live")
+_REQUEST_DEADLINE = ContextVar("live_request_deadline", default=None)
+FEED_LOOKUP_BUDGET_S = 20.0
+
+
+@contextmanager
+def request_deadline(seconds):
+    """One monotonic budget shared by all requests in a lookup/capture."""
+    deadline = time.monotonic() + float(seconds)
+    parent = _REQUEST_DEADLINE.get()
+    token = _REQUEST_DEADLINE.set(min(parent, deadline) if parent else deadline)
+    try:
+        yield
+    finally:
+        _REQUEST_DEADLINE.reset(token)
+
+
+def _request_timeout(timeout):
+    deadline = _REQUEST_DEADLINE.get()
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("live request budget exhausted")
+        return min(float(timeout), remaining)
+    return timeout
+
+
 API_KEY = "0TvQnueqKa5mxJntVWt0w4LpLfEkrV1Ta8rQBb9Z"   # public key used by lolesports.com
 FEED = "https://feed.lolesports.com/livestats/v1"
 CHAMP_ALIASES = {"MonkeyKing": "Wukong", "Ksante": "K'Sante", "KSante": "K'Sante", "Wukong": "Wukong",
@@ -39,8 +68,9 @@ def _get(url, params=None, key=False, allow_empty=False, timeout=30):
     req = urllib.request.Request(url, headers={"User-Agent": "lol-ticker-live/1.0",
                                                **({"x-api-key": API_KEY} if key else {})})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=_request_timeout(timeout)) as r:
             body = r.read().decode()
+        _request_timeout(timeout)  # reject a response arriving after its budget
     except urllib.error.HTTPError as e:
         if allow_empty and e.code in (400, 404):
             return None   # 404: not streaming yet; 400: requested window too recent
@@ -72,7 +102,7 @@ def _game_entry(e, m, g):
     wins = [((t.get("result") or {}).get("gameWins") or 0) for t in ordered]
     # deciding map: both teams one win away -> the match-winner market IS the map market
     deciding = bool(best_of and len(wins) == 2 and wins[0] == wins[1] == (best_of - 1) // 2)
-    return {"game_id": g["id"], "league": e.get("league", {}).get("name"),
+    return {"game_id": g["id"], "series_id": m.get("id"), "league": e.get("league", {}).get("name"),
             "teams": [t.get("name") for t in ordered], "team_ids": [t.get("id") for t in ordered],
             "number": g.get("number"), "best_of": best_of, "wins": wins, "deciding": deciding,
             "sides_known": all(side.get(t.get("id")) in ("blue", "red") for t in mteams)}
@@ -185,7 +215,39 @@ def _hp_block(bt, rt):
     }
 
 
-def fetch_state(game_id, item_gold=None):
+def _combat_block(metadata, frame):
+    """Capture role-resolved combat inputs without changing live forecasts.
+
+    Align this window frame's participant IDs with the game metadata and use
+    only this frame's health. Details payloads are deliberately excluded;
+    missing identity/roles remain unavailable rather than inheriting the
+    aggregate model's slot assumption.
+    """
+    from . import wpcombat
+
+    try:
+        observation = wpcombat.live_observation(metadata, frame)
+        block = wpcombat.observation_features(observation, age_upper_s=0,
+                                             max_age_s=90)
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        # This optional research capture must never interrupt production
+        # inference when the upstream feed changes its participant metadata.
+        observation = {"available": False, "reason": "invalid_live_combat"}
+        block = wpcombat.observation_features(observation, age_upper_s=0,
+                                             max_age_s=90)
+        log.warning("combat capture unavailable: %s", error)
+    block.update({"observation": observation, "source": "official_window",
+                  "observation_timestamp": frame.get("rfc460Timestamp"),
+                  "observation_ts": int(_ts(frame["rfc460Timestamp"]))})
+    return block
+
+
+def fetch_state(game_id, item_gold=None, request_budget_s=FEED_LOOKUP_BUDGET_S):
+    with request_deadline(request_budget_s):
+        return _fetch_state(game_id, item_gold)
+
+
+def _fetch_state(game_id, item_gold=None):
     """Current game state from the feed (window + details), plus 2-min-earlier gold."""
     now = dt.datetime.now(dt.timezone.utc).timestamp()
     start_w = _get(FEED + "/window/%s" % game_id)          # opening frames -> game start
@@ -205,7 +267,7 @@ def fetch_state(game_id, item_gold=None):
     bt, rt = f["blueTeam"], f["redTeam"]
     bt2, rt2 = f2["blueTeam"], f2["redTeam"]
     roles = ["top", "jng", "mid", "bot", "sup"]
-    gold_role = [(bt["participants"][i]["totalGold"] - rt["participants"][i]["totalGold"]) / 1000.0 for i in range(5)]
+    gold_role = _role_gold(bt, rt)
     det = dd["frames"][-1]["participants"]
     items_done = 0; item_gold_sum = 0.0
     if item_gold is not None:
@@ -238,6 +300,7 @@ def fetch_state(game_id, item_gold=None):
         "gold_diff_k": (bt["totalGold"] - rt["totalGold"]) / 1000.0,
         "gold_diff_prev_k": (bt2["totalGold"] - rt2["totalGold"]) / 1000.0,
         "gold_role": gold_role,
+        "gold_players": _player_gold(bt, rt),
         "cs_diff_k": (sum(p["creepScore"] for p in bt["participants"]) - sum(p["creepScore"] for p in rt["participants"])) / 100.0,
         "kills": bt["totalKills"] - rt["totalKills"], "kills_blue": bt["totalKills"], "kills_red": rt["totalKills"],
         "towers": bt["towers"] - rt["towers"], "towers_blue": bt["towers"], "towers_red": rt["towers"],
@@ -252,7 +315,13 @@ def fetch_state(game_id, item_gold=None):
         "dead_blue": dead_b, "dead_red": dead_r,
         "items_done_diff": items_done, "item_gold_diff_k": item_gold_sum / 1000.0,
         **_hp_block(bt, rt),
+        "combat": _combat_block(md, f),
     }
+    from . import wpresearch
+    state.update(wpresearch.capture_draft(md, draft_ts=t0))
+    state["ts"] = int(_ts(f["rfc460Timestamp"]))
+    state["game_state"] = f.get("gameState")
+    wpresearch.capture_dynamic(state, {}, attempt_id=game_id, metadata=md, frame=f)
     return state
 
 
@@ -281,11 +350,20 @@ def estimate(conn, game_id=None, priors=None, teams=None, team_ids=None):
         roster = priors.get("roster")
         pelo_adj = priors.get("pelo_adjustment")
     st.update({k: v for k, v in (priors or {}).items() if k in PRIOR_KEYS})
+    st["prior_provenance"] = (priors or {}).get("prior_provenance")
+    st["prior_availability"] = (priors or {}).get("prior_availability")
+    from . import wpresearch
+    st["prior_confidence"] = wpresearch.capture_priors(priors, as_of_ts=time.time(), teams=teams)
     pred = wpx.predict_live(st, st["blue_champs"], st["red_champs"])
+    st["model_kind"] = pred.get("model_kind")
+    for key in ("combination_coverage", "combination_logit", "model_sha256", "base_sha256", "joint_sha256", "stack_sha256"):
+        if key in pred:
+            st[key] = deepcopy(pred[key])
     # plain production-style estimate (no champion terms) for reference
     pred_nochamp = wpx.predict_live(st, (), ())
     return {"meta": meta, "state": st, "p_blue": pred["p_blue"], "p_blue_no_champ": pred_nochamp["p_blue"],
             "roster": roster, "pelo_adjustment": pelo_adj,
+            "priors_effective": {k: st[k] for k in PRIOR_KEYS if k in st},
             "unknown_champions": pred["unknown_champions"]}
 
 
@@ -320,32 +398,128 @@ def _gamma_events(tag):
 
 _resolved = {}   # game key -> {"ts", "complete", "kalshi": {norm: ticker}, "kalshi_src", "pm": {norm: token}, "pm_src", "pm_slug", "pm_fallback": {norm: price}}
 
+# A Kalshi event ticker embeds the scheduled start in US/Eastern
+# (``KXLOLMAP-26SEP031000BRTNBS-1-BRT`` = 2026-09-03 10:00 ET).  The date can
+# sit a day off the actual play date (rescheduled series keep their ticker), so
+# events are matched by both teams and ranked by distance, not by exact date;
+# anything further than this from the game start is another meeting entirely.
+MAX_EVENT_OFFSET_S = 36 * 3600.0
+_TICKER_TIME_RE = re.compile(r"-(\d\d)(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d\d)(\d\d)(\d\d)")
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"))}
 
-def resolve_markets(teams, game_num, deciding=False):
+
+def ticker_time(ticker):
+    """Scheduled start (epoch seconds) embedded in a Kalshi LoL ticker, or None."""
+    m = _TICKER_TIME_RE.search(ticker or "")
+    if not m:
+        return None
+    from zoneinfo import ZoneInfo
+    yy, mon, dd, hh, mi = m.groups()
+    try:
+        return dt.datetime(2000 + int(yy), _MONTHS[mon], int(dd), int(hh), int(mi),
+                           tzinfo=ZoneInfo("US/Eastern")).timestamp()
+    except ValueError:
+        return None
+
+
+def ticker_offset_ok(ticker, game_start_ts, max_offset_s=MAX_EVENT_OFFSET_S):
+    """False when the ticker's scheduled time is clearly another meeting."""
+    if game_start_ts is None:
+        return True
+    t = ticker_time(ticker)
+    return t is None or abs(t - float(game_start_ts)) <= max_offset_s
+
+
+def team_match(sub, norm):
+    """Exchange subtitle vs schedule name: exact, or the shorter is the
+    whole-word tail of the longer ("meavedron" ~ "up2u meavedron").  Returns
+    2 for exact, 1 for a tail match, 0 otherwise; callers prefer exact."""
+    if not sub or not norm:
+        return 0
+    if sub == norm:
+        return 2
+    a, b = sub.split(), norm.split()
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    if short and len(short) < len(long_) and long_[-len(short):] == short:
+        return 1
+    return 0
+
+
+def _pick_event(by_event, nb, nr, game_start_ts):
+    """Best Kalshi event holding markets for BOTH teams.
+
+    Ranking: name quality first (exact > whole-word tail), then the event
+    scheduled nearest the game start. Both teams must match; an unmatched
+    opponent is not evidence of a rename.
+    Returns (event_ticker, {norm: [markets]}, {norm: sub}) or None."""
+    from .draft import norm_team
+    ranked = []
+    for ev, ms in by_event.items():
+        subs = {}
+        for m in ms:
+            sub = norm_team(m.get("yes_sub_title") or "")
+            if sub:
+                subs.setdefault(sub, []).append(m)
+        found = {}
+        for norm in (nb, nr):
+            best = max(((team_match(sub, norm), sub) for sub in subs), default=(0, None))
+            if best[0]:
+                found[norm] = best
+        if len(found) < 2 or found[nb][1] == found[nr][1]:
+            continue
+        sample = ms[0].get("ticker") or ""
+        t = ticker_time(sample)
+        dist = abs(t - float(game_start_ts)) if (t is not None and game_start_ts is not None) else 0.0
+        if game_start_ts is not None and t is not None and dist > MAX_EVENT_OFFSET_S:
+            continue
+        quality = found[nb][0] + found[nr][0]
+        ranked.append((-quality, dist, ev, {norm: subs[found[norm][1]] for norm in (nb, nr)},
+                       {norm: found[norm][1] for norm in (nb, nr)}))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda r: (r[0], r[1], str(r[2])))
+    _, _, ev, markets, subs = ranked[0]
+    return ev, markets, subs
+
+
+def resolve_markets(teams, game_num, deciding=False, game_start_ts=None):
     """Find the exchange markets for this map once (slow scans: Kalshi series
-    listing + all open Gamma LoL events). Returns a dict of ids to quote later."""
+    listing + all open Gamma LoL events). Returns a dict of ids to quote later.
+
+    Kalshi markets are grouped by event and an event must carry BOTH teams;
+    among several (a team playing twice in a week) the one scheduled nearest
+    ``game_start_ts`` wins.  Matching one team alone used to quote another
+    series' market (2026-09-03 audit)."""
     from .draft import norm_team
     nb, nr = norm_team(teams[0]), norm_team(teams[1])
-    res = {"kalshi": {}, "pm": {}, "pm_fallback": {}, "kalshi_src": None, "pm_src": None, "pm_slug": None}
+    res = {"kalshi": {}, "pm": {}, "pm_fallback": {}, "kalshi_src": None, "pm_src": None, "pm_slug": None,
+           "kalshi_event": None}
     try:
+        by_ev = {}
         for m in _kalshi_markets("KXLOLMAP"):
-            sub = norm_team(m.get("yes_sub_title") or "")
-            if (re.search(r"\bmap\s+%d\b" % game_num, m.get("title") or "", re.I)
-                    and sub in (nb, nr)):
-                res["kalshi"][sub] = m["ticker"]; res["kalshi_src"] = "map"
+            if re.search(r"\bmap\s+%d\b" % game_num, m.get("title") or "", re.I):
+                by_ev.setdefault(m.get("event_ticker"), []).append(m)
+        pick = _pick_event(by_ev, nb, nr, game_start_ts)
+        if pick:
+            ev, markets, subs = pick
+            for norm in (nb, nr):
+                res["kalshi"][norm] = markets[norm][0]["ticker"]
+            res["kalshi_src"] = "map"; res["kalshi_event"] = ev
+            if subs[nb] != nb or subs[nr] != nr:
+                log.info("kalshi team names matched by tail: %s -> %s", subs, (nb, nr))
         if deciding and not res["kalshi"]:
             # match-winner markets: titles vary ("Will X win the A vs. B match?" / "X wins"),
             # so group by event and require both teams among the event's yes_sub_titles
             by_ev = {}
             for m in _kalshi_markets("KXLOLGAME"):
                 by_ev.setdefault(m.get("event_ticker"), []).append(m)
-            for ev, ms in by_ev.items():
-                subs = {norm_team(m.get("yes_sub_title") or ""): m for m in ms}
-                if nb in subs and nr in subs:
-                    for sub in (nb, nr):
-                        res["kalshi"][sub] = subs[sub]["ticker"]
-                    res["kalshi_src"] = "series"
-                    break
+            pick = _pick_event(by_ev, nb, nr, game_start_ts)
+            if pick:
+                ev, markets, subs = pick
+                for norm in (nb, nr):
+                    res["kalshi"][norm] = markets[norm][0]["ticker"]
+                res["kalshi_src"] = "series"; res["kalshi_event"] = ev
     except Exception as e:
         log.warning("kalshi lookup failed: %s", e)
     try:
@@ -438,17 +612,19 @@ def quote_markets(res, teams):
     return out
 
 
-def market_prices(conn, teams, game_num, deciding=False):
+def market_prices(conn, teams, game_num, deciding=False, game_start_ts=None):
     """Current Kalshi / Polymarket prices for this map, blue-oriented by team order.
     Resolution (slow scans) is cached per (teams, map); quotes are fetched live.
     `deciding`: series tied one map from the end -> match-winner market is used
     when no per-map market exists (it resolves on this map). Each platform entry
     carries `source` ('map' | 'series')."""
-    key = (tuple(teams), game_num, bool(deciding))
+    # Same teams/map on a later day must not borrow an earlier meeting's IDs.
+    event_day = int(float(game_start_ts) // 86400) if game_start_ts else None
+    key = (tuple(teams), game_num, bool(deciding), event_day)
     now = time.time()
     r = _resolved.get(key)
     if r is None or (now - r["ts"] > (600 if r["complete"] else 60)):
-        r = resolve_markets(teams, game_num, deciding); r["ts"] = now
+        r = resolve_markets(teams, game_num, deciding, game_start_ts); r["ts"] = now
         _resolved[key] = r
     return quote_markets(r, teams)
 
@@ -484,17 +660,23 @@ def team_priors(conn, teams):
     now = time.time()
     cached = getattr(team_priors, "_cache", None)
     if not cached or now - cached["at"] > 60:
-        rows = conn.execute("""SELECT g.blue_team, g.red_team, g.winner, g.date_utc,
-                                      r.elo_blue, r.elo_red, r.pelo_blue, r.pelo_red
+        rows = conn.execute("""SELECT g.game_id, g.blue_team, g.red_team, g.winner, g.date_utc,
+                                      r.elo_blue, r.elo_red, r.pelo_blue, r.pelo_red,
+                                      (SELECT json_agg(p.player ORDER BY p.position) FROM oe_players p
+                                       WHERE p.game_id=g.game_id AND p.team=g.blue_team) AS players_blue,
+                                      (SELECT json_agg(p.player ORDER BY p.position) FROM oe_players p
+                                       WHERE p.game_id=g.game_id AND p.team=g.red_team) AS players_red
                                FROM oe_games g JOIN oe_ratings r ON r.game_id = g.game_id
                                WHERE g.date_utc > extract(epoch from now()) - 120*86400
+                                 AND g.date_utc <= extract(epoch from now())
                                  AND g.winner IS NOT NULL
                                ORDER BY g.date_utc DESC, g.game_id DESC""").fetchall()
-        gg_rows = conn.execute("""SELECT blue_team, red_team, winner_side,
+        gg_rows = conn.execute("""SELECT game_id, date, blue_team, red_team, winner_side,
                                          elo_blue_pre, elo_red_pre,
                                          elo_blue_pre_fast, elo_red_pre_fast
                                   FROM golgg_games
                                   WHERE date > now() - interval '120 days'
+                                    AND date <= CURRENT_DATE
                                     AND winner_side IS NOT NULL
                                     AND elo_blue_pre IS NOT NULL
                                   ORDER BY date DESC, match_id DESC, game_num DESC""").fetchall()
@@ -502,14 +684,17 @@ def team_priors(conn, teams):
         team_priors._cache = cached
     rows = cached["rows"]
     vals = {}
+    source_oe, source_gg = {}, {}
     for name in teams:
         nt = norm_team(name)
         recent = []
+        sample_games = 0
         for row in rows:
             blue = norm_team(row["blue_team"]) == nt
             red = norm_team(row["red_team"]) == nt
             if not blue and not red:
                 continue
+            sample_games += 1
             won = 1.0 if row["winner"] == (row["blue_team"] if blue else row["red_team"]) else 0.0
             if len(recent) < 10:
                 recent.append(won)
@@ -522,11 +707,20 @@ def team_priors(conn, teams):
                 exp_player = 1.0 / (1.0 + 10 ** ((popp - pelo) / 400.0))
                 vals[nt] = [elo + 30.0 * (won - exp_team),
                             pelo + 24.0 * (won - exp_player), 0.5]
+                source_oe[nt] = {"source": "oe_games+oe_ratings", "game_id": row.get("game_id"),
+                                 "date": row.get("date_utc"),
+                                 "age_days": _source_age_days(row.get("date_utc"), now),
+                                 "players": list(row.get("players_blue" if blue else "players_red") or []),
+                                 "available": True, "postgame_updated": True}
         if nt in vals and recent:
             vals[nt][2] = sum(recent) / len(recent)
+            source_oe[nt].update(sample_games=sample_games, sample_window_days=120,
+                                 sample_count_as_of_ts=source_oe[nt]["date"])
     gg_vals = {}
     for name in teams:
         nt = norm_team(name)
+        sample_games = sum(norm_team(row["blue_team"]) == nt or norm_team(row["red_team"]) == nt
+                           for row in cached.get("gg_rows", []))
         for row in cached.get("gg_rows", []):
             blue = norm_team(row["blue_team"]) == nt
             if not blue and norm_team(row["red_team"]) != nt:
@@ -543,6 +737,12 @@ def team_priors(conn, teams):
             else:
                 fast_adv = None
             gg_vals[nt] = (elo + 30.0 * (won - exp), fast_adv)
+            source_gg[nt] = {"source": "golgg_games", "game_id": row.get("game_id"),
+                             "date": str(row["date"]) if row.get("date") is not None else None,
+                             "age_days": _source_age_days(row.get("date"), now),
+                             "available": True, "postgame_updated": True,
+                             "sample_games": sample_games, "sample_window_days": 120,
+                             "sample_count_as_of_ts": str(row["date"]) if row.get("date") is not None else None}
             break
     nb, nr = norm_team(teams[0]), norm_team(teams[1])
     oe_found = nb in vals and nr in vals
@@ -555,10 +755,19 @@ def team_priors(conn, teams):
         log.warning("team_priors: no OE/gol.gg rating match for %s "
                     "(normalized %s)", missing,
                     [norm_team(t) for t in missing])
+    provenance = {"oe": {side: source_oe.get(name, {"available": False, "source": "oe_games+oe_ratings"})
+                         for side, name in (("blue", nb), ("red", nr))},
+                  "golgg": {side: source_gg.get(name, {"available": False, "source": "golgg_games"})
+                            for side, name in (("blue", nb), ("red", nr))}}
+    availability = {"elo_oe": oe_found, "pelo_oe": oe_found, "form_diff": oe_found,
+                    "elo_gg": gg_found, "elo_gg_fast": gg_found and
+                    all(v[1] is not None for n, v in gg_vals.items() if n in (nb, nr))}
     if not oe_found and not gg_found:
-        return {"found": False}
+        return {"found": False, "oe_found": False, "gg_found": False,
+                "prior_provenance": provenance, "prior_availability": availability}
     out = {"found": True, "oe_found": oe_found, "gg_found": gg_found,
-           "elo_oe": 0.0, "pelo_oe": 0.0, "form_diff": 0.0, "elo_gg": None}
+           "elo_oe": 0.0, "pelo_oe": 0.0, "form_diff": 0.0, "elo_gg": None,
+           "prior_provenance": provenance, "prior_availability": availability}
     if oe_found:
         b, r_ = vals[nb], vals[nr]
         out.update({"elo_oe": (b[0] - r_[0]) / 400.0, "pelo_oe": (b[1] - r_[1]) / 400.0,
@@ -579,6 +788,25 @@ def team_priors(conn, teams):
 # The team prior describes the lineup that played the team's LAST rated game;
 # a substitution today makes that prior stale.  Compare the live feed's
 # summoner names against that reference roster and flag the difference.
+
+
+def _source_age_days(value, now=None):
+    if value is None:
+        return None
+    from .util import parse_ts
+    if isinstance(value, dt.datetime):
+        stamp = value.replace(tzinfo=value.tzinfo or dt.timezone.utc).timestamp()
+    elif isinstance(value, dt.date):
+        stamp = dt.datetime.combine(value, dt.time(), dt.timezone.utc).timestamp()
+    else:
+        stamp = parse_ts(value)
+        if stamp is None:
+            try:
+                parsed = dt.datetime.fromisoformat(str(value))
+                stamp = parsed.replace(tzinfo=parsed.tzinfo or dt.timezone.utc).timestamp()
+            except (ValueError, TypeError):
+                pass
+    return max(0.0, ((time.time() if now is None else now)-stamp)/86400.0) if stamp is not None else None
 
 def _norm_player(name):
     return re.sub(r"[^a-z0-9]", "", (name or "").lower())
@@ -668,26 +896,31 @@ def _player_elos(conn):
     return cached["table"]
 
 
-def _resolve_lineup(table, names):
+def _resolve_lineup(table, names, details=False):
     """([elo per resolved player], [unresolved names]) for feed summoner names."""
-    vals, unresolved = [], []
+    vals, unresolved, resolved, used = [], [], [], set()
     for name in names or []:
         tokens = str(name or "").split()
         cands = [c for c in (_norm_player(name),
                              _norm_player(" ".join(tokens[1:])) if len(tokens) > 1 else "")
                  if c]
-        hit = next((table[c] for c in cands if c in table), None)
-        if hit is None:
+        key = next((c for c in cands if c in table and c not in used), None)
+        if key is None:
             # tagless joins ("T1Faker"): longest sufficiently-long suffix wins
-            suffix = sorted((k for k in table
+            suffix = sorted((k for k in table if k not in used
                              if len(k) >= 4 and any(c.endswith(k) for c in cands)),
                             key=len, reverse=True)
-            hit = table[suffix[0]] if suffix else None
-        if hit is not None:
+            key = suffix[0] if suffix else None
+        if key is not None:
+            hit = table[key]
+            used.add(key)
             vals.append(hit[0])
+            resolved.append({"live_name": name, "matched_name": key, "elo": hit[0],
+                             "games": hit[1], "last_ts": hit[2],
+                             "age_days": _source_age_days(hit[2]), "source": "oe_player_elo"})
         elif name:
             unresolved.append(name)
-    return vals, unresolved
+    return (vals, unresolved, resolved) if details else (vals, unresolved)
 
 
 def lineup_adjusted_priors(conn, teams, priors, blue_players, red_players):
@@ -701,7 +934,8 @@ def lineup_adjusted_priors(conn, teams, priors, blue_players, red_players):
     1500).  Other prior channels are left untouched.
     """
     priors = dict(priors or {})
-    roster = roster_check(conn, teams, blue_players, red_players)
+    roster = roster_check(conn, teams, blue_players, red_players,
+                          prior_provenance=priors.get("prior_provenance"))
     priors["roster"] = roster
     table = _player_elos(conn)
     means, info = {}, {}
@@ -710,9 +944,9 @@ def lineup_adjusted_priors(conn, teams, priors, blue_players, red_players):
         rc = roster.get(side) or {}
         needs = (rc.get("changed") or team_mean is None) and bool(names)
         applied = False
+        vals, unresolved, resolved = _resolve_lineup(table, names, details=True)
         if needs and table:
-            vals, unresolved = _resolve_lineup(table, names)
-            if len(vals) >= 4:
+            if len(names) == 5 and len(vals) >= 4:
                 fill = team_mean if team_mean is not None else 1500.0
                 mean = (sum(vals) + fill * len(unresolved)) / (len(vals) + len(unresolved))
                 means[side] = mean
@@ -720,13 +954,23 @@ def lineup_adjusted_priors(conn, teams, priors, blue_players, red_players):
                 info[side] = {"applied": True, "lineup_pelo": round(mean, 1),
                               "reference_pelo": (round(team_mean, 1)
                                                  if team_mean is not None else None),
-                              "resolved": len(vals), "unresolved": unresolved}
+                              "resolved": len(vals), "unresolved": unresolved,
+                              "resolved_players": resolved, "source": "oe_player_elo",
+                              "reference_source": rc.get("reference_source")}
         if not applied:
             means[side] = team_mean
-            info[side] = {"applied": False}
+            info[side] = {"applied": False, "resolved": len(vals), "unresolved": unresolved,
+                          "resolved_players": resolved, "source": "oe_player_elo",
+                          "reference_source": rc.get("reference_source"),
+                          "reason": ("rating_source_lineup_unavailable" if not needs and not rc.get("available") else
+                                     "unchanged_rating_source_roster" if not needs else
+                                     "incomplete_lineup" if len(names or []) != 5 else "fewer_than_four_resolved_players")}
     if means["blue"] is not None and means["red"] is not None:
         old = priors.get("pelo_oe")
         priors["pelo_oe"] = (means["blue"] - means["red"]) / 400.0
+        # Retain the exact side means behind this differential for research
+        # confidence; rounded informational lineup values cannot reconstruct it.
+        priors["pelo_blue"], priors["pelo_red"] = means["blue"], means["red"]
         if any(v["applied"] for v in info.values()):
             priors["found"] = True
             log.info("lineup-adjusted pelo: %.3f -> %.3f (%s)",
@@ -734,28 +978,43 @@ def lineup_adjusted_priors(conn, teams, priors, blue_players, red_players):
                      priors["pelo_oe"],
                      {s: v for s, v in info.items() if v["applied"]})
     priors["pelo_adjustment"] = info
+    if "prior_availability" in priors:
+        priors["prior_availability"] = dict(priors["prior_availability"])
+        priors["prior_availability"]["pelo_oe"] = all(means[s] is not None for s in ("blue", "red"))
     return priors
 
 
-def roster_check(conn, teams, blue_players, red_players):
+def roster_check(conn, teams, blue_players, red_players, prior_provenance=None):
     """Per-side lineup comparison against each team's last rated roster."""
     out = {}
     for side, team, names in (("blue", teams[0], blue_players),
                               ("red", teams[1], red_players)):
-        ref = _reference_roster(conn, team)
+        # A player-Elo prior from OE must be compared with that exact OE
+        # lineup. A newer gol.gg lineup can hide a substitution since the
+        # stale OE source. Legacy callers without provenance retain their
+        # informational gol.gg comparison.
+        if prior_provenance is not None:
+            source = (prior_provenance.get("oe") or {}).get(side) or {}
+            ref = dict(source) if source.get("available") and source.get("players") else None
+        else:
+            ref = _reference_roster(conn, team)
         if not ref or not names:
-            out[side] = {"available": False, "team": team}
+            out[side] = {"available": False, "team": team,
+                         "reference_source": "oe_games+oe_ratings" if prior_provenance is not None else "golgg_games",
+                         "reason": "rating_source_lineup_unavailable" if not ref else "live_lineup_unavailable"}
             continue
         matched, new, missing = match_lineup(ref["players"], names)
         changed = bool(new) and bool(missing)
         out[side] = {"available": True, "team": team, "changed": changed,
                      "matched": len(matched), "new": new, "missing": missing,
                      "reference_game_id": ref["game_id"],
-                     "reference_date": ref["date"]}
+                     "reference_date": ref["date"],
+                     "reference_age_days": ref.get("age_days", _source_age_days(ref.get("date"))),
+                     "reference_source": ref.get("source", "golgg_games")}
         if changed:
             log.warning("roster change for %s: %s in, %s out "
-                        "(prior reflects gol.gg game %s on %s)",
-                        team, new, missing, ref["game_id"], ref["date"])
+                        "(prior reflects %s game %s on %s)",
+                        team, new, missing, ref.get("source", "golgg_games"), ref["game_id"], ref["date"])
     return out
 
 
@@ -764,12 +1023,29 @@ def roster_check(conn, teams, blue_players, red_players):
 _cache = {}   # game_id -> {"t0", "md", "champs_b", "champs_r", "item_gold", "seen": set(), "markets": (ts, val), "priors"}
 
 
+def _player_gold(blue, red):
+    """Absolute slot-aligned gold, or an explicit missing-input fallback."""
+    players = list(blue.get("participants") or []) + list(red.get("participants") or [])
+    if (len(blue.get("participants") or []) != 5 or len(red.get("participants") or []) != 5
+            or any(p.get("totalGold") is None for p in players)):
+        return None
+    values = [float(p["totalGold"]) for p in players]
+    return values if all(math.isfinite(g) and g >= 0 for g in values) else None
+
+
+def _role_gold(blue, red):
+    gold = _player_gold(blue, red)
+    # Existing model adapters already fall back to the team gold difference
+    # when this optional role breakdown is unavailable.
+    return [(gold[i]-gold[i+5])/1000.0 for i in range(5)] if gold is not None else None
+
+
 def _frame_state(md, f, f_prev, det, item_gold, t0, game_clock_s=None):
     """State dict for one window frame (+ matching details frame)."""
     clock = (_ts(f["rfc460Timestamp"]) - t0) if game_clock_s is None else game_clock_s
     bt, rt = f["blueTeam"], f["redTeam"]
     bt2, rt2 = (f_prev["blueTeam"], f_prev["redTeam"]) if f_prev else (bt, rt)
-    gold_role = [(bt["participants"][i]["totalGold"] - rt["participants"][i]["totalGold"]) / 1000.0 for i in range(5)]
+    gold_role = _role_gold(bt, rt)
     dead_b = sum(1 for p in bt["participants"] if p.get("currentHealth", 1) <= 0)
     dead_r = sum(1 for p in rt["participants"] if p.get("currentHealth", 1) <= 0)
     items_done = 0; item_gold_sum = 0.0
@@ -787,11 +1063,13 @@ def _frame_state(md, f, f_prev, det, item_gold, t0, game_clock_s=None):
     elder_b = sum(str(d).lower() == "elder" for d in bd)
     elder_r = sum(str(d).lower() == "elder" for d in rd)
     return {
-        "ts": int(_ts(f["rfc460Timestamp"])), "clock_s": int(clock), "t_min": clock / 60.0,
+        "ts": int(_ts(f["rfc460Timestamp"])), "patch": md.get("patchVersion"),
+        "clock_s": int(clock), "t_min": clock / 60.0,
         "gold_blue": bt["totalGold"], "gold_red": rt["totalGold"],
         "gold_diff_k": (bt["totalGold"] - rt["totalGold"]) / 1000.0,
         "gold_diff_prev_k": (bt2["totalGold"] - rt2["totalGold"]) / 1000.0,
         "gold_role": gold_role,
+        "gold_players": _player_gold(bt, rt),
         "cs_diff_k": (sum(p["creepScore"] for p in bt["participants"]) - sum(p["creepScore"] for p in rt["participants"])) / 100.0,
         "kills": bt["totalKills"] - rt["totalKills"], "kills_blue": bt["totalKills"], "kills_red": rt["totalKills"],
         "towers": bt["towers"] - rt["towers"], "towers_blue": bt["towers"], "towers_red": rt["towers"],
@@ -806,6 +1084,7 @@ def _frame_state(md, f, f_prev, det, item_gold, t0, game_clock_s=None):
         "dead_blue": dead_b, "dead_red": dead_r,
         "items_done_diff": items_done, "item_gold_diff_k": item_gold_sum / 1000.0,
         **_hp_block(bt, rt),
+        "combat": _combat_block(md, f),
     }
 
 
@@ -822,7 +1101,7 @@ def _new_cache(conn, md, t0):
             "champs_b": cb, "champs_r": cr,
             "item_gold": {r["item_id"]: (r["gold"] or 0) for r in conn.execute("SELECT item_id, gold FROM golgg_items")},
             "item_names": {r["item_id"]: r["name"] for r in conn.execute("SELECT item_id, name FROM golgg_items")},
-            "seen": set(), "markets": (0, {}),
+            "seen": set(), "markets": (0, {}), "scored_frames": {},
             "prev": {"pause_s": 0.0, "last_frame_ts": None, "last_game_state": None,
                      "baron_seeded": False, "baron_counts": None,
                      "last_baron_clock": [None, None],
@@ -998,7 +1277,61 @@ def _restart_t0(game_id, ts_hint, t0_old):
     return first_ts
 
 
-def estimate_series(conn, game_id, priors=None, since_ts=0, teams=None):
+def _lineup_metadata(md):
+    """Player identities remain available even when fresh frames are missing."""
+    return [
+        {"side": side, "pid": p.get("participantId"),
+         "player": p.get("summonerName"), "role": p.get("role"),
+         "champion": CHAMP_ALIASES.get(p.get("championId"), p.get("championId"))}
+        for side in ("blue", "red")
+        for p in md.get(side + "TeamMetadata", {}).get("participantMetadata", [])
+    ]
+
+
+def estimate_series(conn, game_id, priors=None, since_ts=0, teams=None,
+                    request_budget_s=FEED_LOOKUP_BUDGET_S, research_context=None):
+    """Score one game with one shared feed-request deadline."""
+    with request_deadline(request_budget_s):
+        result = _estimate_series(conn, game_id, priors, since_ts, teams, research_context)
+        result["lineup"] = _lineup_metadata((_cache.get(game_id) or {}).get("md", {}))
+        return result
+
+
+def _score_live_frame(state, priors, blue_champs, red_champs,
+                      prior_provenance=None, prior_availability=None, prior_confidence=None):
+    """Score cached telemetry again without replaying feed state transitions.
+
+    The recorder can correct schedule-side priors after its first feed read.
+    Reused telemetry must then receive those corrected priors, and the model
+    loaded for this pass, rather than retaining the first forecast's values.
+    """
+    from . import wpx
+    st = deepcopy(state)
+    for name in PRIOR_KEYS:
+        st.pop(name, None)
+    st.update(priors or {})
+    st["prior_provenance"] = prior_provenance
+    st["prior_availability"] = prior_availability
+    st["prior_confidence"] = deepcopy(prior_confidence)
+    pr = wpx.predict_live(st, blue_champs, red_champs)
+    st["p_blue"] = pr["p_blue"]
+    st["p_blue_no_champ"] = wpx.predict_live(st, (), ())["p_blue"]
+    for key in ("lo_prior", "lo_state", "lo_champ", "lo_time"):
+        st[key] = pr[key]
+    for key in ("lo_deaths", "lo_champ_state", "lo_baron_active", "lo_elder_active"):
+        st[key] = pr.get(key)
+    st["terminal_state"] = pr.get("terminal_state", False)
+    st["model_input_warnings"] = pr.get("input_warnings") or []
+    st["model_clipped_inputs"] = pr.get("clipped_inputs") or []
+    st["model_reliability"] = pr.get("reliability", "normal")
+    st["model_kind"] = pr.get("model_kind")
+    for key in ("combination_coverage", "combination_logit", "model_sha256", "base_sha256", "joint_sha256", "stack_sha256"):
+        if key in pr:
+            st[key] = deepcopy(pr[key])
+    return st
+
+
+def _estimate_series(conn, game_id, priors=None, since_ts=0, teams=None, research_context=None):
     """Score every new 1 Hz frame since `since_ts`; returns frames + summary.
 
     Uses the feed's 10-frame windows: one window ~70 s back (latest available),
@@ -1006,7 +1339,7 @@ def estimate_series(conn, game_id, priors=None, since_ts=0, teams=None):
     When ``teams`` is given, the player-Elo prior is recomputed for the
     lineup actually on the rift (see lineup_adjusted_priors) before scoring.
     """
-    from . import wpx
+    from . import wpresearch
     c = _cache.get(game_id)
     if c is None:
         w0 = _get(FEED + "/window/%s" % game_id, allow_empty=True)
@@ -1015,18 +1348,9 @@ def estimate_series(conn, game_id, priors=None, since_ts=0, teams=None):
                     "patch": None, "game_start_ts": None}
         c = _new_cache(conn, w0["gameMetadata"], _ts(w0["frames"][0]["rfc460Timestamp"]))
         _cache[game_id] = c
-    roster = pelo_adj = None
-    if teams and priors:
-        md = c["md"]
-        priors = lineup_adjusted_priors(
-            conn, teams, priors,
-            [p.get("summonerName") for p in md["blueTeamMetadata"]["participantMetadata"]],
-            [p.get("summonerName") for p in md["redTeamMetadata"]["participantMetadata"]])
-        roster = priors.get("roster")
-        pelo_adj = priors.get("pelo_adjustment")
-    priors = {k: v for k, v in (priors or {}).items() if k in PRIOR_KEYS}
     now = dt.datetime.now(dt.timezone.utc).timestamp()
     w = dd = None
+    feed_observed_at = None
     # The feed serves 10 s windows whose start must be >= ~40 s in the past
     # (probed 2026-08-22: start at now-33s -> HTTP 400, now-43s -> ok), so the
     # freshest frame is ~35-45 s old. Ask for that window first, step back if refused.
@@ -1040,6 +1364,7 @@ def estimate_series(conn, game_id, priors=None, since_ts=0, teams=None):
     while st > floor_st:
         w = _get(FEED + "/window/%s" % game_id, {"startingTime": _iso(st)}, allow_empty=True)
         if w and w.get("frames"):
+            feed_observed_at = time.time()
             dd = _get(FEED + "/details/%s" % game_id, {"startingTime": _iso(st)}, allow_empty=True)
             st_now = st
             break
@@ -1069,6 +1394,31 @@ def estimate_series(conn, game_id, priors=None, since_ts=0, teams=None):
         c = _new_cache(conn, md_now if md_now.get("blueTeamMetadata") else c["md"], t0_new)
         c["last_st"] = st_now
         _cache[game_id] = c
+    # Resolve the actual attempt's lineup after remake detection. A replaced
+    # draft/roster must not inherit the previous attempt's player identities.
+    roster = pelo_adj = None
+    if teams and priors:
+        md = c["md"]
+        priors = lineup_adjusted_priors(
+            conn, teams, priors,
+            [p.get("summonerName") for p in md["blueTeamMetadata"]["participantMetadata"]],
+            [p.get("summonerName") for p in md["redTeamMetadata"]["participantMetadata"]])
+        roster = priors.get("roster")
+        pelo_adj = priors.get("pelo_adjustment")
+    prior_provenance = (priors or {}).get("prior_provenance")
+    prior_availability = (priors or {}).get("prior_availability")
+    confidence_inputs = {"priors": priors or {}, "teams": teams}
+    confidence_cache = c.get("confidence_research")
+    if confidence_cache is None or confidence_cache["inputs"] != confidence_inputs:
+        confidence_cache = {"inputs": deepcopy(confidence_inputs),
+                            "block": wpresearch.capture_priors(priors, as_of_ts=time.time(), teams=teams)}
+        c["confidence_research"] = confidence_cache
+    prior_confidence = confidence_cache["block"]
+    priors = {k: v for k, v in (priors or {}).items() if k in PRIOR_KEYS}
+    draft_research = c.get("draft_research")
+    if draft_research is None:
+        draft_research = wpresearch.capture_draft(c["md"], draft_ts=c["t0"], context=research_context)
+        c["draft_research"] = deepcopy(draft_research)
     w_prev = _get(FEED + "/window/%s" % game_id, {"startingTime": _iso(st_now - 120)}, allow_empty=True) or {}
     det_by_ts = {int(_ts(f["rfc460Timestamp"])): f for f in (dd or {}).get("frames", [])}
     prev_by_ts = {int(_ts(f["rfc460Timestamp"])): f for f in w_prev.get("frames", [])
@@ -1084,11 +1434,22 @@ def estimate_series(conn, game_id, priors=None, since_ts=0, teams=None):
         prev["kill_seeded"] = True
     out = []
     seen_this_call = set()   # the feed emits several sub-second frames; keep one per second
-    for f in w.get("frames", []):
+    scored_frames = c.setdefault("scored_frames", {})
+    for f in sorted(w.get("frames", []), key=lambda row: _ts(row["rfc460Timestamp"])):
         ts = int(_ts(f["rfc460Timestamp"]))
         if ts < c["t0"] or ts <= since_ts or ts in seen_this_call or f.get("gameState") not in ("in_game", "paused", "finished"):
             continue
         seen_this_call.add(ts)
+        # Repeated and overlapping windows must not replay stateful pause,
+        # objective or kill transitions. Reuse their derived telemetry;
+        # unknown older frames are never applied backwards.
+        if prev.get("last_frame_ts") is not None and ts <= prev["last_frame_ts"]:
+            if ts in scored_frames:
+                rescored = _score_live_frame(scored_frames[ts], priors, c["champs_b"], c["champs_r"],
+                                             prior_provenance, prior_availability, prior_confidence)
+                scored_frames[ts] = deepcopy(rescored)
+                out.append(rescored)
+            continue
         f_prev = prev_by_ts.get(ts - 120) or (next(iter(prev_by_ts.values()), None) if prev_by_ts else None)
         last_ts = prev.get("last_frame_ts")
         if last_ts is not None and prev.get("last_game_state") == "paused":
@@ -1121,24 +1482,20 @@ def estimate_series(conn, game_id, priors=None, since_ts=0, teams=None):
             prev["last_kill_clock"] = st["clock_s"]
         prev["kills"] = tk
         st["t_since_kill_min"] = min(10.0, (st["clock_s"] - prev["last_kill_clock"]) / 60.0) if prev.get("last_kill_clock") is not None else 10.0
-        st.update(priors or {})
-        pr = wpx.predict_live(st, c["champs_b"], c["champs_r"])
-        p = pr["p_blue"]
-        p0 = wpx.predict_live(st, (), ())["p_blue"]
-        st["p_blue"] = p; st["p_blue_no_champ"] = p0; st["game_state"] = f.get("gameState")
-        st["lo_prior"] = pr["lo_prior"]; st["lo_state"] = pr["lo_state"]; st["lo_champ"] = pr["lo_champ"]; st["lo_time"] = pr["lo_time"]
-        st["lo_deaths"] = pr.get("lo_deaths"); st["terminal_state"] = pr.get("terminal_state", False)
-        # recorded so the shadow ledger can split scores by champion-effect
-        # magnitude (the champ-heavy calibration check is unconfirmed on the
-        # backtest; the ledger will answer it prospectively)
-        st["lo_champ_state"] = pr.get("lo_champ_state")
-        st["lo_baron_active"] = pr.get("lo_baron_active")
-        st["lo_elder_active"] = pr.get("lo_elder_active")
-        st["model_input_warnings"] = pr.get("input_warnings") or []
-        st["model_clipped_inputs"] = pr.get("clipped_inputs") or []
-        st["model_reliability"] = pr.get("reliability", "normal")
-        st["model_kind"] = pr.get("model_kind")
+        st["game_state"] = f.get("gameState")
+        st["game_id"] = game_id
+        st.update(deepcopy(draft_research))
+        wpresearch.capture_dynamic(st, c.setdefault("research_trackers", {}), attempt_id=game_id,
+                                   metadata=c["md"], frame=f, context=research_context)
+        st = _score_live_frame(st, priors, c["champs_b"], c["champs_r"],
+                               prior_provenance, prior_availability, prior_confidence)
+        scored_frames[ts] = deepcopy(st)
         out.append(st)
+    # Ten minutes covers every retried/overlapping live window while bounding
+    # memory for dashboards and long-running recorders.
+    last_scored_ts = prev.get("last_frame_ts")
+    if last_scored_ts is not None:
+        c["scored_frames"] = {ts: value for ts, value in scored_frames.items() if ts >= last_scored_ts-600}
     out.sort(key=lambda x: x["ts"])
     # scoreboard: latest window frame + matching details frame
     last = w["frames"][-1]
@@ -1167,4 +1524,8 @@ def estimate_series(conn, game_id, priors=None, since_ts=0, teams=None):
             "blue_team_id": c.get("blue_team_id"), "red_team_id": c.get("red_team_id"),
             "scoreboard": rows, "totals": totals, "frame_ts": int(_ts(last["rfc460Timestamp"])),
             "roster": roster, "pelo_adjustment": pelo_adj, "priors_effective": priors,
-            "feed_lag_s": int(now - _ts(last["rfc460Timestamp"]))}
+            "prior_provenance": prior_provenance, "prior_availability": prior_availability,
+            "feed_lag_s": int(now - _ts(last["rfc460Timestamp"])),
+            "feed_observed_at": feed_observed_at,
+            "upstream_feed_age_s": (feed_observed_at - _ts(last["rfc460Timestamp"]))
+                if feed_observed_at is not None else None}

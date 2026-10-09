@@ -2,8 +2,9 @@
 
 Past Polymarket/Kalshi probabilities supervise a second constrained state
 surface.  A validation block chooses how much of that historical-market
-teacher to mix with the outcome GAM.  A persistent experiment-specific ledger
-reserves later outcomes for a one-time deployment gate.  At live inference
+teacher to mix with the outcome GAM. The shared exposure inventory restricts
+these diagnostics to consumed history; deployment requires separate frozen
+candidate-versus-incumbent forward forecasts. At live inference
 both probabilities are functions only of team/draft/game-state inputs; no
 quote from the current match is accepted.
 """
@@ -15,7 +16,7 @@ import time
 
 import numpy as np
 
-from . import wpbench, wpgam
+from . import wpbench, wpgam, wpexposure
 
 
 log = logging.getLogger("wphist")
@@ -104,19 +105,12 @@ def _mix(model_p, teacher_p, alpha):
         _logit(model_p) + float(alpha) * (_logit(teacher_p) - _logit(model_p)))
 
 
-def _paired_gate(model_p, blend_p, y, gids, bootstrap=2000, seed=173):
-    model_loss = (np.asarray(model_p) - np.asarray(y)) ** 2
-    blend_loss = (np.asarray(blend_p) - np.asarray(y)) ** 2
-    _, model_game = wpbench._per_game(model_loss, gids)
-    _, blend_game = wpbench._per_game(blend_loss, gids)
-    delta = blend_game - model_game
-    rng = np.random.default_rng(seed)
-    draws = rng.choice(delta, size=(bootstrap, len(delta)), replace=True).mean(axis=1)
-    return {
-        "blend_minus_model": float(delta.mean()),
-        "ci95": [float(np.quantile(draws, 0.025)),
-                 float(np.quantile(draws, 0.975))],
-    }
+def _paired_gate(model_p, blend_p, y, gids, bootstrap=2000, seed=173, clusters=None):
+    result = wpexposure.paired_interval(blend_p, model_p, y, gids, clusters,
+                                        bootstrap=bootstrap, seed=seed)
+    result["blend_minus_model"] = result["candidate_minus_incumbent"]
+    result["bootstrap_unit"] = "game" if clusters is None else "series_date"
+    return result
 
 
 def _save_artifact(teacher, alpha, deployed, meta, path=ARTIFACT_PATH,
@@ -143,10 +137,12 @@ def load_artifact(path=ARTIFACT_PATH):
         kind = str(d["kind"].item())
         if kind != KIND:
             raise ValueError("unsupported historical blend kind %s" % kind)
-        if str(d["base_model_kind"].item()) != wpgam.MODEL_KIND:
+        base_kind = str(d["base_model_kind"].item())
+        if base_kind not in wpgam.SUPPORTED_MODEL_KINDS:
             raise ValueError("historical blend base-model contract mismatch")
         return {
             "kind": kind,
+            "base_model_kind": base_kind,
             "base_model_sha256": str(d["base_model_sha256"].item()),
             "deployed": bool(d["deployed"].item()),
             "alpha": float(d["alpha"]),
@@ -179,7 +175,8 @@ def _live_raw(base, state, blue_champs, red_champs):
     champ_state = float(wpgam.champ_state_scores(base["champ_state"]["beta"], C)[0])
     raw = np.concatenate([
         [pre["intercept"] + float(team[0]), float(champ[0]), champ_state],
-        wpgam.state_values_from_live(state),
+        wpgam.state_values_from_live(
+            state, list(base["state"]["feature_names"])[len(wpgam.PRIOR_INPUTS):]),
     ])[None, :]
     return raw, unknown
 
@@ -187,6 +184,9 @@ def _live_raw(base, state, blue_champs, red_champs):
 def predict_live(model_p, state, blue_champs=(), red_champs=(),
                  path=ARTIFACT_PATH, base_path=wpgam.MODEL_PATH):
     """Return a deployed historical blend without accepting a live quote."""
+    from . import wpcombined_prod
+    if state.get("model_kind") == wpcombined_prod.MODEL_KIND or (base_path == wpgam.MODEL_PATH and wpcombined_prod.load_active() is not None):
+        raise ValueError("historical blend is not calibrated for the production combination")
     artifact = load_artifact(path)
     if not artifact["deployed"]:
         return None
@@ -194,6 +194,8 @@ def predict_live(model_p, state, blue_champs=(), red_champs=(),
     if actual_sha != artifact["base_model_sha256"]:
         raise ValueError("historical blend is stale for the current base model")
     base = wpgam.load_model(base_path)
+    if base["kind"] != artifact["base_model_kind"]:
+        raise ValueError("historical blend base-model contract mismatch")
     raw, unknown = _live_raw(base, state, blue_champs, red_champs)
     t_min = float(state.get("t_min", 0.0) or 0.0)
     teacher_p = float(wpgam.predict_state(
@@ -213,7 +215,15 @@ def predict_live(model_p, state, blue_champs=(), red_champs=(),
 
 def run(dataset_path=None, output_path=RESULT_PATH, artifact_path=ARTIFACT_PATH,
         base_path=wpgam.MODEL_PATH, bootstrap=2000,
-        registry_path=REGISTRY_PATH):
+        registry_path=REGISTRY_PATH, exposure_path=None):
+    base_full = wpgam.load_model(base_path)
+    if (base_full["kind"] != wpgam.MODEL_KIND or
+            list(base_full["state"]["feature_names"]) !=
+            wpgam.PRIOR_INPUTS + wpgam.STATE_FEATURES):
+        raise ValueError(
+            "current source can train a historical teacher only for a %s base "
+            "with the current feature contract; base artifact is %s" %
+            (wpgam.MODEL_KIND, base_full["kind"]))
     dataset_path = dataset_path or os.path.join(wpgam.OUT_DIR, "states.npz")
     started = time.time()
     d = np.load(dataset_path, allow_pickle=True)
@@ -221,12 +231,9 @@ def run(dataset_path=None, output_path=RESULT_PATH, artifact_path=ARTIFACT_PATH,
     game_gid = np.asarray(d["gid"])[first]
     game_dates = np.asarray(d["date"])[first].astype(str)
     from . import wpdeploy
-    registry, initialized = wpdeploy._load_registry(
-        registry_path, game_dates, experiment="historical_odds")
-    fresh_test = game_dates > str(registry["consumed_through"])
-    fresh_eligible = int(fresh_test.sum()) >= wpdeploy.MIN_FRESH_GAMES
-    outer_train = ~fresh_test if fresh_eligible else diagnostic_train
-    outer_test = fresh_test if fresh_eligible else ~diagnostic_train
+    outer_train, outer_test, fresh_test, inventory = wpdeploy._development_split(
+        game_gid, game_dates, registry_path, exposure_path)
+    fresh_eligible = False  # new frozen candidates are evaluated prospectively
     inner_train, validation, validation_cutoff = wpbench._date_blocks(
         game_dates, outer_train)
     gid_index = {int(g): i for i, g in enumerate(game_gid)}
@@ -289,16 +296,15 @@ def run(dataset_path=None, output_path=RESULT_PATH, artifact_path=ARTIFACT_PATH,
         test_blend, y_test, gid_test, test_t, bootstrap=bootstrap, seed=185)
     paired = _paired_gate(
         test_model, test_blend, y_test, gid_test,
-        bootstrap=max(bootstrap, 2000))
+        bootstrap=max(bootstrap, 2000), clusters=wpdeploy._row_clusters(d, test_fixed))
     statistical_passed = bool(
         blend_summary["brier_game"] < model_summary["brier_game"]
-        and alpha > 1e-6 and paired["ci95"][1] < 0.0)
+        and alpha > 1e-6 and paired["ci95"] is not None and paired["ci95"][1] < 0.0)
     deployed = bool(statistical_passed and fresh_eligible)
 
     # Refit only on information available for actual deployment.  The teacher
     # sees all stored historical quotes; live inference still sees none.
-    base_full = wpgam.load_model(base_path)
-    all_quotes = event & quoted
+    all_quotes = event & quoted & (~fresh_test)[row_game]
     full_teacher = _fit_teacher(d, base_full, all_quotes, target, best_spec)
     report = {
         "kind": KIND,
@@ -325,11 +331,11 @@ def run(dataset_path=None, output_path=RESULT_PATH, artifact_path=ARTIFACT_PATH,
         "test": {"model": model_summary, "historical_teacher": teacher_summary,
                  "historical_blend": blend_summary, "paired": paired},
         "deployed": deployed,
-        "deployment_rule": "paired improvement CI below zero on >=100 registry-fresh games",
+        "deployment_rule": "diagnostic only; immutable challenger-versus-incumbent forward evidence required",
         "gate": {"statistical_passed": statistical_passed,
                  "fresh_holdout_eligible": fresh_eligible,
                  "fresh_games_available": int(fresh_test.sum()),
-                 "consumed_through_before_run": registry["consumed_through"]},
+                 "consumed_through_before_run": inventory["consumed_through"]},
         "uses_live_odds": False,
         "seconds": round(time.time() - started, 2),
     }
@@ -340,19 +346,8 @@ def run(dataset_path=None, output_path=RESULT_PATH, artifact_path=ARTIFACT_PATH,
         "deployment_rule": report["deployment_rule"],
         "uses_live_odds": False,
     }
-    if fresh_eligible:
-        registry["history"].append({
-            "action": "historical_blend_forward_gate",
-            "test_start": str(min(game_dates[fresh_test].tolist())),
-            "test_end": str(max(game_dates[fresh_test].tolist())),
-            "games": int(fresh_test.sum()), "deployed": deployed,
-            "statistical_passed": statistical_passed})
-        registry["consumed_through"] = str(max(game_dates[fresh_test].tolist()))
-        wpdeploy._write_registry(registry_path, registry)
-    elif initialized:
-        wpdeploy._write_registry(registry_path, registry)
-    # The append-only ledger advances before the human-readable result is
-    # published so a crash cannot make inspected outcomes appear fresh.
+    # Canonical exposure union is persisted before fitting. These diagnostics
+    # never advance either legacy registry or expose an unreserved fresh block.
     _save_artifact(full_teacher, alpha, deployed, meta, artifact_path, base_path)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w") as fh:

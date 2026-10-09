@@ -1,0 +1,116 @@
+{
+  "purpose": "Read-only historical HP-clock causality and feature coverage research; no fitting, promotion, writes to DB, fresh outcomes, or cache rebuilding.",
+  "consumed_through": "2026-09-02",
+  "db_filter": "golgg_games.date < '2026-09-03'",
+  "development_filter": "golgg_games.date < '2026-05-01'",
+  "dataset": "/Users/itch/Documents/Github/esports2/data/wpx/states.npz",
+  "code_refs": {
+    "clock_reanchor": "lol_ticker/wpx.py:513-521",
+    "hp_eligibility": "lol_ticker/wpx.py:356-384",
+    "original_t0": "scripts/feed_backfill.py:101",
+    "last_frame_storage": "scripts/feed_backfill.py:104-117"
+  },
+  "counts": {
+    "feed_games_pre_consumed_end": 2609,
+    "feed_games_first_stored_minute_positive": 2,
+    "fixed_rows_all": 500122,
+    "fixed_hp_rows_all": 82318,
+    "fixed_hp_games_all": 2605,
+    "development_feb_apr_games": 2075,
+    "development_feb_apr_rows": 66934,
+    "development_feb_apr_hp_rows": 21309,
+    "development_feb_apr_unlinked_OE_games": 177,
+    "development_feb_apr_all_OE_zero_rows": 5622,
+    "fixed_dead_count_gt5_pre_may_rows": 52,
+    "fixed_pre_may_rows": 400714
+  },
+  "measured_examples": [
+    {
+      "game_id": 71282,
+      "esports_game_id": "114753627815041054",
+      "date": "2025-08-20",
+      "first_stored_minute": 2,
+      "first_stored_ts": 1755733769,
+      "opening_t0": 1755733649,
+      "hp_shift_earlier_seconds": 120,
+      "endpoint": "https://feed.lolesports.com/livestats/v1/window/114753627815041054",
+      "opening_frames": 10,
+      "opening_first_ts_equals_last_ts": true,
+      "cached_fixed_rows": [
+        {
+          "t": 0,
+          "has_hp": 1.0,
+          "hp_pool": -0.10000000149011612,
+          "lvl_k": 0.0
+        },
+        {
+          "t": 60,
+          "has_hp": 1.0,
+          "hp_pool": -0.7670000195503235,
+          "lvl_k": 0.0
+        },
+        {
+          "t": 120,
+          "has_hp": 1.0,
+          "hp_pool": -0.46700000762939453,
+          "lvl_k": 0.20000000298023224
+        }
+      ]
+    },
+    {
+      "game_id": 81541,
+      "esports_game_id": "116951349275512156",
+      "date": "2026-08-17",
+      "first_stored_minute": 1,
+      "first_stored_ts": 1786967205,
+      "opening_t0": 1786967189,
+      "hp_shift_earlier_seconds": 16,
+      "endpoint": "https://feed.lolesports.com/livestats/v1/window/116951349275512156",
+      "opening_frames": 10,
+      "opening_first_ts_equals_last_ts": true,
+      "cached_fixed_rows": [
+        {
+          "t": 0,
+          "has_hp": 1.0,
+          "hp_pool": 0.0,
+          "lvl_k": 0.0
+        },
+        {
+          "t": 60,
+          "has_hp": 1.0,
+          "hp_pool": 0.0,
+          "lvl_k": 0.0
+        }
+      ]
+    }
+  ],
+  "sample_method": "First 12 feed games with date < 2026-05-01 ordered by md5(esports_game_id); archived opening endpoints only. All first stored minutes=0; 5/12 nonzero origin shift.",
+  "sample_12_game_origin_offsets_seconds": {
+    "72581": 2,
+    "72256": 0,
+    "75346": 1,
+    "73118": 0,
+    "70616": 7,
+    "69007": 0,
+    "72935": 0,
+    "69323": 0,
+    "73244": 0,
+    "72476": 8,
+    "74178": 5,
+    "69556": 0
+  },
+  "interpretation": "Relative to the same original opening-frame time origin used by ingestion/live, the cached features can read HP from after the requested game clock. This establishes a clock-causality defect; it does not estimate the effect on Brier score. Pause/remake correctness needs separate validation.",
+  "other_observations": {
+    "static_item_versions_counts": {
+      "16.16.1": 868,
+      "16.17.1": 1
+    },
+    "development_feb_apr_build_events": {
+      "ITEM_PURCHASED": 581001,
+      "ITEM_DESTROYED": 568018,
+      "ITEM_SOLD": 25550,
+      "ITEM_UNDO": 15764
+    },
+    "item_note": "wpx _load_game only includes PURCHASED/SOLD; historical item value sums component + completed purchases and ignores destruction/undo; live sums current inventory. Items excluded from main GAM state but included as nuisance regressors in champion-state fit and legacy comparator."
+  }
+}

@@ -17,25 +17,25 @@ np.seterr(all="ignore")  # saturated logits overflow harmlessly in the sigmoid
 
 log = logging.getLogger("wpa")
 
-SCHEMA = """
-ALTER TABLE golgg_games ADD COLUMN IF NOT EXISTS elo_blue_pre REAL;
-ALTER TABLE golgg_games ADD COLUMN IF NOT EXISTS elo_red_pre REAL;
-ALTER TABLE golgg_games ADD COLUMN IF NOT EXISTS elo_blue_pre_fast REAL;  -- K=120 recency variant
-ALTER TABLE golgg_games ADD COLUMN IF NOT EXISTS elo_red_pre_fast REAL;
-CREATE TABLE IF NOT EXISTS wp_model (
-    feature TEXT PRIMARY KEY, coef DOUBLE PRECISION
-);
-CREATE TABLE IF NOT EXISTS wp_meta (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE IF NOT EXISTS event_wpa (
-    game_id INT NOT NULL, seq INT NOT NULL,
-    time_s INT, action TEXT, side TEXT, player TEXT, target TEXT,
-    wp_before REAL, wp_after REAL,
-    wpa REAL,              -- change in blue WP
-    wpa_actor REAL,        -- swing toward the acting side
-    PRIMARY KEY (game_id, seq)
-);
-CREATE INDEX IF NOT EXISTS idx_event_wpa_action ON event_wpa (action);
-"""
+SCHEMA = (
+    'ALTER TABLE golgg_games ADD COLUMN IF NOT EXISTS elo_blue_pre REAL;',
+    'ALTER TABLE golgg_games ADD COLUMN IF NOT EXISTS elo_red_pre REAL;',
+    'ALTER TABLE golgg_games ADD COLUMN IF NOT EXISTS elo_blue_pre_fast REAL; -- K=120 recency variant',
+    'ALTER TABLE golgg_games ADD COLUMN IF NOT EXISTS elo_red_pre_fast REAL;',
+    """CREATE TABLE IF NOT EXISTS wp_model (
+        feature TEXT PRIMARY KEY, coef DOUBLE PRECISION
+    );""",
+    'CREATE TABLE IF NOT EXISTS wp_meta (key TEXT PRIMARY KEY, value TEXT);',
+    """CREATE TABLE IF NOT EXISTS event_wpa (
+        game_id INT NOT NULL, seq INT NOT NULL,
+        time_s INT, action TEXT, side TEXT, player TEXT, target TEXT,
+        wp_before REAL, wp_after REAL,
+        wpa REAL,              -- change in blue WP
+        wpa_actor REAL,        -- swing toward the acting side
+        PRIMARY KEY (game_id, seq)
+    );""",
+    'CREATE INDEX IF NOT EXISTS idx_event_wpa_action ON event_wpa (action);',
+)
 
 COUNT_ACTIONS = ["kill", "tower", "dragon", "baron", "inhib", "herald", "grubs",
                  "atakhan", "plate"]
@@ -44,8 +44,8 @@ FEATURES = (["bias", "blue_side", "elo_diff", "t", "gold_k", "gold_k_x_t"] +
 
 
 def ensure_schema(conn):
-    conn.execute(SCHEMA)
-    conn.commit()
+    from . import db
+    db.apply_schema(conn, SCHEMA)
 
 
 # ---------------------------------------------------------------------- Elo

@@ -8,6 +8,13 @@ and keeps itself up to date as new games are played. Everything lands in
 Python 3.9+; install the dependencies in `requirements.txt`. No API keys are
 needed (all endpoints are public).
 
+The dashboard's **Player impact** page (`/players`) ranks recorded worldwide
+players with competition-adjusted logistic win RAPM, measured in wins added per 100 games. It includes age cohorts,
+a published-age scatter, current form and sampled career peaks from the
+2014–2026 Oracle’s Elixir archive. `/players/archive` exposes early results back
+to WCG 2010; records without reliable complete player lineups are excluded from individual fits.
+See [model, coverage and source notes](docs/player-impact-rankings.md).
+
 ## Database setup (one-time)
 
 ```bash
@@ -239,9 +246,9 @@ Two outcome-based models evaluate drafts and events without any market data
   model is well calibrated (holdout Brier ≈ 0.15 over all states) but the
   market is clearly sharper at identical moments (Brier ≈ 0.11 vs ≈ 0.13,
   log-loss ≈ 0.34 vs ≈ 0.39 on both platforms).
-- `python3 -m lol_ticker wpx all` — **model exploration and production fit**
+- **Model exploration and staged fitting**
   (`lol_ticker/wpx.py`, `lol_ticker/wpgam.py`):
-  builds a state dataset (per-role gold, CS, momentum, item completion and
+  the original pipeline builds a state dataset (per-role gold, CS, momentum, item completion and
   item gold, objective/structure state, players on respawn timers, baron/elder
   buffs, objective timers; priors: sequential team Elo and player ratings over
   all OE games, recent form, margin-RAPM team/player ratings refit monthly on
@@ -259,21 +266,22 @@ Two outcome-based models evaluate drafts and events without any market data
   earlier-date holdout calibrates the final logits. `wpx gam-eval` evaluates
   the newest 20% of games and reports state- and game-weighted scores with
   game-block bootstrap intervals. `wpx rolling --windows 3` runs strict
-  expanding-window stability checks. `wpx fit` now stages both candidate
-  components, verifies convergence and finite inference, runs the exact
-  live-contract stack gate, audits ordered live-input sweeps for monotone
-  behavior, and atomically promotes the manifest last; a crash or hash mismatch
-  therefore falls back to the constrained GAM. Previous artifacts remain as
-  `.previous`.
+  expanding-window stability checks. `wpx all` is disabled during the corrected
+  input transition; explicit builds and experiment paths are described below.
+  `wpx fit` stages changed artifacts, including same-kind refreshes. Promotion
+  requires a frozen, exact-artifact candidate comparison against the incumbent,
+  a completed fixed endpoint, sufficient precision and live shape audits.
+  Promotion copies the evaluated artifact without refitting and replaces the
+  manifest last. Previous artifacts remain as `.previous`.
   `wpx bench` performs a nested chronological comparison of additive ridge
   logistic regression, unconstrained and constrained time-varying GAMs,
   histogram gradient boosting, monotone histogram boosting, and validation-fit
   convex ensembles. Hyperparameters and blend weights use a middle date block;
   its newest block is a chronological diagnostic. For actual promotion, a
-  persistent `evaluation_registry.json` prevents an inspected outcome block
-  from being relabeled as fresh: all games present when the registry was
-  introduced are quarantined, and a stack change needs at least 100 later
-  games.
+  shared `outcome_exposure.json` preserves the union of the legacy registries
+  and inspected forward outcomes, preventing already-consumed games from being
+  relabeled as fresh. The 100-game collection floor alone does not establish
+  adequate precision or an accuracy improvement.
 
   The v5 live contract models teamfights with the linear death advantage,
   signed squared death advantage, individual side death-count curvature, and
@@ -328,6 +336,21 @@ Two outcome-based models evaluate drafts and events without any market data
   statistically indistinguishable +0.00028.
 
   The **deployed live forecast is currently the constrained GAM alone**.
+  The September 4 **v9 repair is staged**, while the deployed artifact remains
+  v8: discrete Elder features survive scaling, five monotone role-gold effects
+  replace allocation deviations, and calibration nests the champion learner
+  inside earlier dates. Architectural refreshes stage a candidate without
+  replacing the incumbent. The recency retest did not improve the later replay;
+  see [implementation and validation](docs/model-repairs-2026-09-04.md).
+  The [alternative-method reevaluation](docs/alternative-methods-2026-09-04.md)
+  uses `scripts/wpx_methods_v9.py` to compare fourteen families and two
+  ensembles with the repaired contract, separate calibration dates, frozen
+  development choices and monthly replay. Earlier benchmark files retain their
+  original evaluation protocol and should not be mixed with these scores.
+  The [matched market comparison](docs/market-comparison-2026-09-04.md)
+  reuses those predictions: the rich GAM beats both exchanges at reconstructed
+  state times, its advantage is inconclusive at a 45-second market offset,
+  and every reevaluated method trails both markets at a 195-second offset.
   The former hard-coded GAM/champscale blend was retired because its legacy
   component had been backtested with historical-only fields that became zero
   live and with event/state-weighted rather than game-balanced loss. Its
@@ -455,8 +478,38 @@ Two outcome-based models evaluate drafts and events without any market data
 
 ### Prospective shadow scoring
 
+Role-specific combat readiness is now captured in each live frame's
+`state.combat`: per-role alive/HP and the gold/levels held by living players,
+joined through participant IDs and metadata roles. It is research telemetry;
+the deployed forecast is unchanged. The October 4 historical screen selected
+the corrected-core baseline rather than either readiness residual. See the
+[implementation, limits and results](docs/combat-readiness-2026-10-04.md).
+Reproduce into a new directory with
+`python3 scripts/wpx_combat.py --out data/wpx/combat_reproduction`.
+
+Objective opportunities, composition, Fearless context, prior confidence,
+recent trajectories and an early SQ signal now have isolated research adapters
+and live capture blocks. Experiments retain the incumbent unless supported by
+their declared comparison; source coverage and unavailable families are
+explicit. See [the six-item expansion](docs/model-expansion-2026-10-04.md) for
+capture contracts, source requirements and results.
+
+The corrected-input core candidate registered September 12, 2026 is scored on
+the incumbent's exact new frames without requiring market quotes. Its fixed
+endpoint is December 1 UTC, with a 2,437-game minimum and an explicit precision
+gate. The deployed v8 artifact remains unchanged. See the
+[implementation and results report](docs/model-improvements-2026-09-12.md)
+for the corrected-data study, frozen artifact and sample-size limitations.
+`python3 -m lol_ticker.wpcandidate status` reads candidate progress;
+`data/wpx/shadow_candidate_score.json` is refreshed by normal shadow scoring.
+
 `python3 -m lol_ticker shadow record` runs the forward-only evaluator
-(`lol_ticker/shadow.py`). The first live model frame observed in each integer
+(`lol_ticker/shadow.py`). The current v12 protocol uses a bounded
+background quote cache (12-second lookup budget, maximum quote age 15 seconds).
+Quote misses stay missing. Resolution/scoring run off the capture loop;
+coverage reports separate upstream feed age from local processing and retain
+the 90-second lead limit and 100-game target. Earlier protocol rows remain
+queryable. The first live model frame observed in each integer
 game minute is written together with contemporaneous blue-oriented market
 midpoints used strictly as comparison benchmarks, the independently generated
 historical blend when its holdout gate passes, exact feed-to-quote lag, side
@@ -464,7 +517,12 @@ assignment, component/stack SHA-256 hashes, blend weight and exact source
 revision. A database trigger rejects updates or deletes, while the primary key admits only one row for that game
 minute: missing or stale quotes remain missing and historical games are never
 backfilled. Outcomes are written later to a separate table; remade attempts
-are voided.
+are voided. Outcomes come first from the local gol.gg/feed link or Oracle's
+Elixir and, when neither has the game yet, from the **settlement of the very
+markets quoted in the row** (the Kalshi market's `result`, or Polymarket's
+resolved outcome prices), so scoring does not wait for the nightly scrape.
+Outcomes belong to a game rather than a protocol, so rolled-over ledgers keep
+resolving and can be scored with `shadow score --protocol <id>`.
 
 The protocol is content-addressed and registered before the first prediction.
 Full stack provenance and the GAM-only gate decision start the
@@ -475,7 +533,19 @@ model versions silently. Pre-v8 rows are explicitly labeled partial because
 their legacy component cannot be reconstructed.
 Its primary metric is game-balanced Brier for the deployed independent
 forecast versus the raw market on the same `(game, minute)` rows, with a paired
-game-block bootstrap interval. Runs
+game-block bootstrap interval. Every eligible row uses the forecast selected
+at capture; an unavailable optional blend falls back to that row's model
+forecast. Scoring and the 100-game cohort use the same quote and timing rules.
+Since `shadow_v10_lead_gate` the primary rows
+are those whose market quote leads the model's feed frame by at most 90
+seconds (`primary_market_lead_s`, registered in the protocol); the feed itself
+lags ~45–140 s, and a 2026-09-03 audit found the recorder stalling for
+minutes inside the market-quote path, so rows captured after a stall handed
+the market minutes of extra game state and dominated the raw aggregate
+(at leads under 90 s the model and market were indistinguishable). The
+same summary over every quoted row is reported as `all_leads`, and each row
+stores per-stage capture timings (`state.capture_timing`; captures over 60 s
+log a warning naming the slowest stage). Runs
 before 100 resolved games per platform are labeled descriptive, avoiding a
 confirmatory claim from repeated early peeking. Model refreshes are allowed,
 but every forecast retains the exact artifact versions that generated it.
@@ -491,8 +561,28 @@ For a result that cannot yet be matched automatically, use
 `shadow resolve --game-id ID --winner blue|red`; manual provenance is stored
 with the outcome.
 The normal `scripts/update.sh` workflow starts the continuous shadow recorder,
-and the dashboard's **Prospective shadow** button shows capture progress and
-scores without refitting the blend.
+resolves and scores the ledger at the end of every refresh, and the
+dashboard's **Prospective shadow** button shows capture progress and scores
+without refitting the blend. Exchange markets are matched per event: a Kalshi event must list both teams
+(exact names first, then a whole-word tail such as "Meavedron" for
+"UP2U Meavedron") and, among several meetings of a team, the one scheduled
+nearest the game start within 36 h wins; Kalshi ticker dates can sit a day off
+the actual play date, so the window is deliberately wide. Quotes or settlements
+from a ticker outside that window are treated as another game's market and
+excluded from every scoring cohort (a 2026-09-03 audit found single-team
+matching quoting the wrong series and one outcome settled from it). Since
+`shadow_v11_market_event_match` captures with a feed frame older than 600 s
+are skipped, start-time jitter under 120 s is folded into one attempt instead
+of voiding it as a remake, and Polymarket settlement reads closed markets
+(Gamma hides them without `closed=true`). The refresh is scheduled nightly at 06:30 local
+by `scripts/com.lolticker.update.plist` (launchd; install with
+`cp scripts/com.lolticker.update.plist ~/Library/LaunchAgents/ && launchctl
+bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lolticker.update.plist`);
+it needs the same Full Disk Access grant as the record agent (see
+"Keeping it updated" below), otherwise it exits at once with `EX_CONFIG`.
+A failed Oracle's Elixir download (Drive quota) is non-fatal there: the
+previous CSV stays in use and the gol.gg scrape, recency Elo and model refit
+still run.
 
   Earlier exploratory findings (Aug 2026, 3.4k–4.8k games):
   event-instant scoring favours the market because events are anchored to its
@@ -512,7 +602,18 @@ scores without refitting the blend.
   carry real, if modest, outcome signal. Per-(game, team) **draft edge** =
   P(win | Elo + draft) − P(win | Elo) lands in `draft_outcome_games`; the
   dashboard ranks teams and champion effects from it, next to the
-  market-based tables for cross-checking.
+  market-based tables for cross-checking. Since 2026-09-17 the fit also takes
+  one ridge-penalised `__sq_pair__` input (`draft.SQ_PAIR_ENABLED`).
+- `python3 -m lol_ticker sqpairs refresh|build` — solo-queue matchup/synergy
+  prior (`lol_ticker/sqpairs.py`). Lolalytics lane-vs-lane matchup and
+  teammate-synergy deltas (emerald+, ~25M games/patch), shrunk by n/(n+k) with
+  k from the solo-queue data alone, summed over a draft's 25 matchups and
+  20 synergies. A pro map on patch P is scored only from patches before P, so
+  there is no look-ahead and no pro outcome ever enters. Newest-date gate
+  (train < 2026-08-01, 1,972 holdout maps): log loss 0.63310 → 0.63034,
+  paired Δ −0.0028 [−0.0050, −0.0005]. `refresh` re-fetches a live patch's
+  ~1,240 pages at most weekly (1 req/s, stops on 403/429) and runs as phase S
+  of `scripts/update.sh`. Details: `docs/sq-pair-prior-2026-09-17.md`.
 
 `game`/`export` terms match team names, event ids, or market titles; a
 `YYYY-MM-DD` term filters by game day (UTC). Export writes one directory per
@@ -522,15 +623,26 @@ overlapped the game.
 
 ## One-shot refresh
 
-`sh scripts/update.sh` brings everything current in one go (logs in
+`sh scripts/update.sh` refreshes source data and priors (logs in
 `data/update*.log`): discovers new markets and backfills newly settled ones,
 re-downloads the current Oracle's Elixir CSV and rebuilds the draft tables,
 runs the gol.gg scrape incrementally for the last three weeks, then re-aligns
 timelines with odds, refits the odds-free WP/WPA and draft outcome models,
-rebuilds the exploration dataset and the live model, and starts the `record`
-daemon if it isn't running (`--no-record` to skip that). `python3 -m
+updates source ratings, resolves and scores shadow outcomes, and starts the
+`record` and shadow daemons if needed (`--no-record` to skip starting them).
+Automatic GAM builds, fitting and historical evaluation are gated while the
+corrected-input candidate is evaluated prospectively. The deployed GAM and
+frozen candidate artifacts remain fixed. `python3 -m
 lol_ticker live` then estimates the in-progress LoL Esports game from the
 official live-stats feed.
+
+Corrected historical builds require an explicit new artifact path and an
+exclusive cutoff, for example `python3 -m lol_ticker wpx build --out
+data/wpx/states_inputs_v2_before_2026-09-03.npz --before 2026-09-03`. Existing
+files cannot be overwritten. These builds do not change the default legacy
+`states.npz` used by older fit/evaluation commands; use their output explicitly
+in the corrected-input experiment. `wpx all` is disabled to prevent combining
+the two input contracts accidentally.
 
 ## Keeping it updated as new games are played
 
@@ -544,14 +656,53 @@ official live-stats feed.
 4. checks Kalshi **exchange status** every 60 s (see outages below);
 5. auto-backfills markets that just settled.
 
-Run it under launchd so it survives reboots:
+Start it (and the shadow recorder) detached from the current shell with
 
 ```bash
-cp scripts/com.lolticker.record.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.lolticker.record.plist
+sh scripts/start_daemons.sh all
 ```
 
-Logs go to `data/record.log`.
+which skips daemons already running and starts the rest in their own
+session, so they outlive the terminal or agent session that launched them
+(a plain `nohup ... &` does not: both daemons died that way after the
+2026-09-15 refresh, unnoticed until 09-27). Logs go to `data/record.log`.
+
+`scripts/com.lolticker.record.plist` runs it under launchd so it survives
+reboots (`cp` to `~/Library/LaunchAgents/` and `launchctl bootstrap
+gui/$(id -u) ...`), **but only once macOS lets launchd-spawned processes
+read this folder**: the repo lives under `~/Documents`, which privacy
+protection closes to anything not started from an app that has been
+granted access. Under launchd, `/bin/sh` and `/usr/bin/python3` get
+"Operation not permitted" on the repo, so the job exits immediately (the
+nightly update agent has failed this way on every run, `launchctl print`
+shows `last exit code = 78: EX_CONFIG`). Fix by granting `/usr/bin/python3`
+and `/bin/sh` Full Disk Access in System Settings → Privacy & Security
+(add them with the + button, Cmd+Shift+G to type the path), or by moving
+the checkout outside `~/Documents`/`~/Desktop`/`~/Downloads`.
+
+## Backing up to the Windows box
+
+`scripts/backup_to_windows.sh` copies everything that is not in git to the
+Windows PC's 12 TB drive over Tailscale. The drive is reachable only as an SMB
+share (`Code`), so mount it first in Finder (Cmd+K, `smb://100.123.212.8`, tick
+"remember in keychain"), then:
+
+```bash
+sh scripts/backup_to_windows.sh all /Volumes/Code      # dump (~5 min) + sync; or `dump` / `sync <mount>` separately
+```
+
+`dump` writes a `pg_dump -Fc --compress=zstd:9` of `league` (77 GB on disk,
+~2.1 GB dumped) plus roles and a manifest (versions, sizes, sha256) to
+`~/.cache/esports2-backup`. `sync <mount>` copies it to
+`<mount>/esports2-backup/postgres/`, mirrors `data/` (second-level folders with
+more than 500 files, e.g. `sq/lolalytics`, ship as one tar under `data/_tar/`
+because small files crawl over SMB), adds a git bundle of every commit plus the
+working tree under `code/`, verifies size and archive TOC (`VERIFY=full`
+re-reads the copy for sha256), and writes restore steps to `README.txt` on the
+share: install the same TimescaleDB version first, then
+`timescaledb_pre_restore()` / `pg_restore -j 4` / `timescaledb_post_restore()`.
+The mirror never deletes on the share and dumps accumulate by timestamp. Not
+scheduled; run it after a refresh. Log: `data/backup.log`.
 
 ## Kalshi trading pauses
 
@@ -615,3 +766,58 @@ GROUP BY minute ORDER BY minute;
 - Upgrade path if 5 s snapshots aren't enough: both exchanges expose order-book
   websockets (Polymarket's is unauthenticated; Kalshi's needs an API key). The
   schema already fits deltas-as-snapshots.
+
+### Major-league-only model comparisons
+
+`scripts/wpx_major.py` builds a season-aware cohort of direct Worlds-slot leagues
+and Worlds/MSI/First Stand, then runs all 14 repaired model families, both
+ensembles, the 180-day recency comparison, and the matched market diagnostics.
+It excludes academy/regional leagues, promotion events, and other cups. Historical
+league membership is explicit for 2024–2026; an unknown season fails rather than
+silently guessing. Existing historical Elo/form inputs remain available, while
+all fitted prior, champion, calibration and state learners use included games.
+The current gameplay-state source has no LPL-labeled games because their
+timelines are unavailable. The separate postdraft export below includes LPL.
+
+```bash
+DYLD_LIBRARY_PATH=/Users/itch/Library/Python/3.9/lib/python/site-packages/sklearn/.dylibs \
+OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+/tmp/esports2-methods-v9-env/bin/python scripts/wpx_major.py \
+  --source-cache data/wpx/adapt_cache/408b0e7b37ff020354920067
+python3 scripts/wpx_major_report.py
+```
+
+Use `--prepare-only` to inspect `data/wpx/major_v9/cohort.json` before fitting.
+Outputs are isolated under `data/wpx/major_v9`; changed cohort inputs require a
+new output directory. The report also joins the existing all-league and new
+major-only monthly predictions by game/minute, comparing both on identical
+major-league rows. These remain retrospective diagnostics; the runner does not
+deploy a model or consume a fresh evaluation block.
+
+### Postdraft inputs, including LPL
+
+Completed drafts do not require gameplay timelines. `wpx postdraft-build`
+exports one neutral time-zero row per map using validated champions, pregame
+team/player ratings and form, and earlier maps in the same series. It reads
+no gameplay fields; the current map's result is only a label. Missing priors
+and rejected drafts are recorded in a manifest beside the dataset.
+
+```bash
+python3 -m lol_ticker wpx postdraft-build \
+  --out data/wpx/postdraft_inputs_2026-09-03.npz --before 2026-09-03
+```
+
+The output must be new and the cutoff is exclusive. Exporting inputs does not
+fit a model; training and calibration still require separate date cutoffs.
+The LPL betting replay uses the exact pre-May historical v8 model recovered
+from its archived source and inputs, verified against all 99,408 saved held-out
+predictions. Run the recovery first, then the replay:
+
+```bash
+OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 python3 scripts/wpx_recover_v8.py
+OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 python3 scripts/wpx_postdraft_bets.py
+```
+
+Artifacts are isolated under `data/wpx/postdraft_lpl_2026-09-12`; the replay
+adds LPL to the frozen earlier ledger and reports $10/$20/$100 stakes with
+historical taker fees. See [the LPL results and assumptions](docs/postdraft-lpl-2026-09-12.md).

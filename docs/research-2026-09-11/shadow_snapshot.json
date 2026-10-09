@@ -1,0 +1,456 @@
+{
+  "artifact_versions": {
+    "3a5afe7158d6@07282ad8481e": 3,
+    "3a5afe7158d6@1f89e4d55faf": 7,
+    "3a5afe7158d6@5f0de89078b8": 1,
+    "3a5afe7158d6@7cfd3e06c399": 3841,
+    "3a5afe7158d6@f4d0fbfd979b": 3
+  },
+  "max_market_lead_s": 90.0,
+  "platforms": {
+    "kalshi": {
+      "all_leads": {
+        "confirmatory_ready": true,
+        "confirmatory_target_games": 100,
+        "coverage": {
+          "eligible_games_needed": 0,
+          "eligible_quote_rows": 2312,
+          "eligible_row_fraction": 1.0,
+          "median_processing_after_feed_s": 0.7392333745956421,
+          "median_upstream_feed_age_s": 190.90544545650482,
+          "quote_row_fraction": 1.0,
+          "resolved_model_rows": 2312,
+          "valid_quote_rows": 2312
+        },
+        "excluded_lead_rows": 0,
+        "games": 140,
+        "max_market_lead_s": null,
+        "median_market_lead_s": 188.8049999475479,
+        "paired": {
+          "ci95": [
+            -0.03651534024724695,
+            -0.008893340048416926
+          ],
+          "forecast": "model",
+          "market_minus_forecast": -0.02211660850301253
+        },
+        "scores": {
+          "market": {
+            "brier_game": 0.1183378030584252,
+            "brier_game_ci95": [
+              0.09984168790623471,
+              0.13687653998362073
+            ],
+            "brier_state": 0.13053647545415226,
+            "by_phase": {
+              "early": {
+                "brier_game": 0.1720250945678866,
+                "brier_state": 0.17429627518557794,
+                "logloss_game": 0.5133051417199402,
+                "logloss_state": 0.5189697454128757
+              },
+              "late": {
+                "brier_game": 0.06742933858675608,
+                "brier_state": 0.08390863287560582,
+                "logloss_game": 0.21896181949624494,
+                "logloss_state": 0.2682949064270188
+              },
+              "mid": {
+                "brier_game": 0.11458895408163267,
+                "brier_state": 0.11399933333333336,
+                "logloss_game": 0.364061144056049,
+                "logloss_state": 0.3647032770391606
+              }
+            },
+            "calibration": {
+              "ece10": 0.052592477008913445,
+              "intercept": 0.07526322441879327,
+              "slope": 1.521561431412538
+            },
+            "games": 140,
+            "logloss_game": 0.3688274942940703,
+            "logloss_state": 0.40181248909257655,
+            "states": 2312
+          },
+          "model": {
+            "brier_game": 0.1404544115614377,
+            "brier_game_ci95": [
+              0.11846339087660927,
+              0.1625568187158928
+            ],
+            "brier_state": 0.15667721815743946,
+            "by_phase": {
+              "early": {
+                "brier_game": 0.21148221055648359,
+                "brier_state": 0.2166337929162248,
+                "logloss_game": 0.6020250300979951,
+                "logloss_state": 0.6172373988228403
+              },
+              "late": {
+                "brier_game": 0.07510170266921426,
+                "brier_state": 0.0976166860581583,
+                "logloss_game": 0.2483973447574376,
+                "logloss_state": 0.31761473258767126
+              },
+              "mid": {
+                "brier_game": 0.12774899345955046,
+                "brier_state": 0.13003644398666667,
+                "logloss_game": 0.39654045595475007,
+                "logloss_state": 0.4037952278357407
+              }
+            },
+            "calibration": {
+              "ece10": 0.03922379734811292,
+              "intercept": -0.05399241668919634,
+              "slope": 1.0830346276152374
+            },
+            "games": 140,
+            "logloss_game": 0.4212107818905058,
+            "logloss_state": 0.4677788959509136,
+            "states": 2312
+          }
+        },
+        "states": 2312
+      },
+      "confirmatory_ready": false,
+      "confirmatory_target_games": 100,
+      "coverage": {
+        "eligible_games_needed": 27,
+        "eligible_quote_rows": 858,
+        "eligible_row_fraction": 0.222568093385214,
+        "median_processing_after_feed_s": 0.7362608909606934,
+        "median_upstream_feed_age_s": 58.95099973678589,
+        "quote_row_fraction": 0.5997405966277561,
+        "resolved_model_rows": 3855,
+        "valid_quote_rows": 2312
+      },
+      "excluded_lead_rows": 1454,
+      "games": 73,
+      "max_market_lead_s": 90.0,
+      "median_market_lead_s": 35.50750005245209,
+      "paired": {
+        "ci95": [
+          -0.03269254892337486,
+          0.006612278752468987
+        ],
+        "forecast": "model",
+        "market_minus_forecast": -0.0128271916769429
+      },
+      "scores": {
+        "market": {
+          "brier_game": 0.14148573148986268,
+          "brier_game_ci95": [
+            0.11235297617003995,
+            0.17238795252787342
+          ],
+          "brier_state": 0.1698587121212121,
+          "by_phase": {
+            "early": {
+              "brier_game": 0.1990287289662062,
+              "brier_state": 0.2070082709580838,
+              "logloss_game": 0.5792537797677808,
+              "logloss_state": 0.5995629147583518
+            },
+            "late": {
+              "brier_game": 0.10171849977756363,
+              "brier_state": 0.1277345041322314,
+              "logloss_game": 0.3146007684606889,
+              "logloss_state": 0.3836167022481034
+            },
+            "mid": {
+              "brier_game": 0.14086121555335096,
+              "brier_state": 0.16200802304964537,
+              "logloss_game": 0.4309942030501204,
+              "logloss_state": 0.4908580791305213
+            }
+          },
+          "calibration": {
+            "ece10": 0.05030239119372218,
+            "intercept": 0.039407328531958156,
+            "slope": 1.2792171909968024
+          },
+          "games": 73,
+          "logloss_game": 0.42814499477080015,
+          "logloss_state": 0.5029268459069202,
+          "states": 858
+        },
+        "model": {
+          "brier_game": 0.1543129231668056,
+          "brier_game_ci95": [
+            0.12095900431012807,
+            0.1918084825200596
+          ],
+          "brier_state": 0.1857405988927739,
+          "by_phase": {
+            "early": {
+              "brier_game": 0.23156456687550084,
+              "brier_state": 0.24603837434131734,
+              "logloss_game": 0.6530025057348062,
+              "logloss_state": 0.6913290831798892
+            },
+            "late": {
+              "brier_game": 0.09999077594711002,
+              "brier_state": 0.12162580157024794,
+              "logloss_game": 0.31457650621244393,
+              "logloss_state": 0.38267337502889853
+            },
+            "mid": {
+              "brier_game": 0.14730342139688837,
+              "brier_state": 0.1693445845390071,
+              "logloss_game": 0.44870753690194576,
+              "logloss_state": 0.5108901427163645
+            }
+          },
+          "calibration": {
+            "ece10": 0.06678942724063569,
+            "intercept": 0.014217961260779538,
+            "slope": 0.9295151863265912
+          },
+          "games": 73,
+          "logloss_game": 0.4570097109373428,
+          "logloss_state": 0.5449672386772625,
+          "states": 858
+        }
+      },
+      "states": 858
+    },
+    "polymarket": {
+      "all_leads": {
+        "confirmatory_ready": true,
+        "confirmatory_target_games": 100,
+        "coverage": {
+          "eligible_games_needed": 0,
+          "eligible_quote_rows": 1995,
+          "eligible_row_fraction": 1.0,
+          "median_processing_after_feed_s": 0.7094039916992188,
+          "median_upstream_feed_age_s": 46.87129092216492,
+          "quote_row_fraction": 1.0,
+          "resolved_model_rows": 1995,
+          "valid_quote_rows": 1995
+        },
+        "excluded_lead_rows": 0,
+        "games": 105,
+        "max_market_lead_s": null,
+        "median_market_lead_s": 47.882999897003174,
+        "paired": {
+          "ci95": [
+            -0.04094164760553305,
+            -0.008729892506965724
+          ],
+          "forecast": "model",
+          "market_minus_forecast": -0.024364363847030154
+        },
+        "scores": {
+          "market": {
+            "brier_game": 0.13874771474693742,
+            "brier_game_ci95": [
+              0.114028997996007,
+              0.16631269870735632
+            ],
+            "brier_state": 0.1578320593984962,
+            "by_phase": {
+              "early": {
+                "brier_game": 0.1840479161471655,
+                "brier_state": 0.18782167014270035,
+                "logloss_game": 0.5413876745848634,
+                "logloss_state": 0.5519631377626515
+              },
+              "late": {
+                "brier_game": 0.095995137395373,
+                "brier_state": 0.13349382159624412,
+                "logloss_game": 0.30620186864144305,
+                "logloss_state": 0.4063124835364186
+              },
+              "mid": {
+                "brier_game": 0.12528667514109346,
+                "brier_state": 0.13206846352583587,
+                "logloss_game": 0.3898572993782251,
+                "logloss_state": 0.4120295161929512
+              }
+            },
+            "calibration": {
+              "ece10": 0.048326945284700884,
+              "intercept": 0.059475551634232925,
+              "slope": 1.2498884136833492
+            },
+            "games": 105,
+            "logloss_game": 0.4225458805269229,
+            "logloss_state": 0.47470824969586556,
+            "states": 1995
+          },
+          "model": {
+            "brier_game": 0.16311207859396756,
+            "brier_game_ci95": [
+              0.13444239705386712,
+              0.19472510810364466
+            ],
+            "brier_state": 0.18562136952882205,
+            "by_phase": {
+              "early": {
+                "brier_game": 0.2222346339946637,
+                "brier_state": 0.22409998954994512,
+                "logloss_game": 0.6280158338752622,
+                "logloss_state": 0.6327431864048599
+              },
+              "late": {
+                "brier_game": 0.11514040698340029,
+                "brier_state": 0.1493603049061033,
+                "logloss_game": 0.3607258550171308,
+                "logloss_state": 0.4525755059087523
+              },
+              "mid": {
+                "brier_game": 0.14666563269942684,
+                "brier_state": 0.15582378699088145,
+                "logloss_game": 0.44130752758488756,
+                "logloss_state": 0.47068880910061417
+              }
+            },
+            "calibration": {
+              "ece10": 0.041218131594943336,
+              "intercept": -0.028379274016205956,
+              "slope": 0.9269102360333092
+            },
+            "games": 105,
+            "logloss_game": 0.48103626295684493,
+            "logloss_state": 0.5408217768020852,
+            "states": 1995
+          }
+        },
+        "states": 1995
+      },
+      "confirmatory_ready": false,
+      "confirmatory_target_games": 100,
+      "coverage": {
+        "eligible_games_needed": 35,
+        "eligible_quote_rows": 1127,
+        "eligible_row_fraction": 0.29234760051880676,
+        "median_processing_after_feed_s": 0.7362608909606934,
+        "median_upstream_feed_age_s": 58.95099973678589,
+        "quote_row_fraction": 0.5175097276264592,
+        "resolved_model_rows": 3855,
+        "valid_quote_rows": 1995
+      },
+      "excluded_lead_rows": 868,
+      "games": 65,
+      "max_market_lead_s": 90.0,
+      "median_market_lead_s": 26.098000049591064,
+      "paired": {
+        "ci95": [
+          -0.03515988248831786,
+          0.0014324389224449343
+        ],
+        "forecast": "model",
+        "market_minus_forecast": -0.016468592461696692
+      },
+      "scores": {
+        "market": {
+          "brier_game": 0.15672201550452353,
+          "brier_game_ci95": [
+            0.12042224126864144,
+            0.19379007606791818
+          ],
+          "brier_state": 0.18143884205856256,
+          "by_phase": {
+            "early": {
+              "brier_game": 0.2114737155947588,
+              "brier_state": 0.20988502222222225,
+              "logloss_game": 0.6106871241486465,
+              "logloss_state": 0.6109561267379519
+            },
+            "late": {
+              "brier_game": 0.11225195462915835,
+              "brier_state": 0.15491521616541354,
+              "logloss_game": 0.34315510090380974,
+              "logloss_state": 0.45618585762897695
+            },
+            "mid": {
+              "brier_game": 0.1491883054689755,
+              "brier_state": 0.16224328278688524,
+              "logloss_game": 0.4525841456590045,
+              "logloss_state": 0.4912750741708331
+            }
+          },
+          "calibration": {
+            "ece10": 0.0586824710460231,
+            "intercept": 0.013217777604523268,
+            "slope": 1.0720276330429688
+          },
+          "games": 65,
+          "logloss_game": 0.4672499452128498,
+          "logloss_state": 0.5355593593710017,
+          "states": 1127
+        },
+        "model": {
+          "brier_game": 0.17319060796622024,
+          "brier_game_ci95": [
+            0.1336856679013018,
+            0.21229594134684732
+          ],
+          "brier_state": 0.1975537728393966,
+          "by_phase": {
+            "early": {
+              "brier_game": 0.2406970339281048,
+              "brier_state": 0.23268686781818182,
+              "logloss_game": 0.6769596279698206,
+              "logloss_state": 0.6567160022693276
+            },
+            "late": {
+              "brier_game": 0.12267629423998058,
+              "brier_state": 0.1603789205639098,
+              "logloss_game": 0.3772449685675558,
+              "logloss_state": 0.48070291277463495
+            },
+            "mid": {
+              "brier_game": 0.1633900032411977,
+              "brier_state": 0.17705549057377046,
+              "logloss_game": 0.4841014819914702,
+              "logloss_state": 0.5250573743379499
+            }
+          },
+          "calibration": {
+            "ece10": 0.0731218933960992,
+            "intercept": 0.0007143595148028138,
+            "slope": 0.8411734806758102
+          },
+          "games": 65,
+          "logloss_game": 0.5070122944663602,
+          "logloss_state": 0.5724156121819518,
+          "states": 1127
+        }
+      },
+      "states": 1127
+    }
+  },
+  "protocol": {
+    "confirmatory_freeze": "first score pass with 100 complete-case resolved games",
+    "confirmatory_games_per_platform": 100,
+    "forecast_inputs": "team ratings (OE and gol.gg Elo at K=30 and K=120), current-series score, draft, champion-state scores, window-health deaths, stateful Baron/Elder timers, gold share, kill recency, and game state only; no quote from the current match",
+    "historical_backfill": false,
+    "historical_odds": "offline teacher input only; chronological holdout gate required for deployment",
+    "market_matching": "exchange event must list both teams; nearest scheduled start within live.MAX_EVENT_OFFSET_S; quotes and settlements from tickers outside that window are invalid",
+    "market_price": "blue-oriented midpoint captured only as a comparison benchmark",
+    "max_feed_lag_s": 600.0,
+    "model_updates": "allowed but artifact SHA-256 is frozen on every row",
+    "outcome_sources": "local feed/gol.gg link, Oracle's Elixir, then exchange settlement (Kalshi market result, Polymarket resolution) of the market quoted in the row",
+    "outcomes": "recorded separately after capture; remade attempts are void",
+    "primary_comparison": "holdout-gated promoted odds-free stack versus raw platform market; constrained GAM alone whenever the comparator gate is rejected",
+    "primary_market_lead_s": 90.0,
+    "primary_metric": "game-balanced Brier on identical independent-forecast/market rows",
+    "primary_rows": "rows whose market quote leads the model's feed frame by at most primary_market_lead_s; all-lead rows are reported separately",
+    "prospective_only": true,
+    "quote_collection": "bounded background lookups; latest already-observed quote no more than 15 seconds old at capture; cold or expired cache is missing, never backfilled",
+    "quote_lookup_budget_s": 12.0,
+    "quote_max_age_s": 15.0,
+    "sampling_cadence_s": 15,
+    "sampling_unit": "first captured live frame per integer game minute",
+    "start_jitter_s": 120,
+    "started_at": "2026-09-04T21:28:13.364190Z",
+    "uncertainty": "paired game-block bootstrap",
+    "valid_market": "non-stale and non-settled quote",
+    "version": "shadow_v12_nonblocking_quotes"
+  },
+  "protocol_id": "shadow_v12_nonblocking_quotes-00b9f6bfa179",
+  "resolved_rows": 3855,
+  "scored_at": "2026-09-12T06:02:14.054454Z",
+  "source_sha256": "5cd66820ef883e4af4a6817c60f3ead68579a2ea35bb77061b4e19b0dd41ecda"
+}

@@ -24,38 +24,37 @@ from . import draft
 
 log = logging.getLogger("align")
 
-SCHEMA = """
-ALTER TABLE golgg_games ADD COLUMN IF NOT EXISTS oe_game_id TEXT;
-CREATE INDEX IF NOT EXISTS idx_golgg_games_oe ON golgg_games (oe_game_id);
-
-CREATE TABLE IF NOT EXISTS game_alignment (
-    game_id     INT NOT NULL,          -- golgg game id
-    platform    TEXT NOT NULL,
-    market_id   TEXT NOT NULL,
-    team        TEXT,                  -- team the market refers to (YES side)
-    team_side   TEXT,                  -- 'blue' | 'red'
-    start_wall  BIGINT,                -- wall clock at in-game 0:00
-    end_wall    BIGINT,                -- wall clock at nexus / terminal move
-    duration_s  INT,
-    pauses      JSONB,                 -- [{game_time_s, wall_ts, length_s}]
-    n_events    INT, n_matched INT,
-    quality     REAL,                  -- matched / significant events
-    built_at    BIGINT,
-    PRIMARY KEY (game_id, platform, market_id)
-);
-CREATE TABLE IF NOT EXISTS event_odds (
-    game_id     INT NOT NULL, platform TEXT NOT NULL, market_id TEXT NOT NULL,
-    seq         INT NOT NULL,
-    time_s      INT, wall_ts BIGINT,
-    action      TEXT, side TEXT, player TEXT, target TEXT,
-    p_before    REAL, p_after REAL,
-    dp          REAL,                  -- market team's odds change
-    dp_actor    REAL,                  -- swing toward the acting side (+ = helped actor)
-    matched     BOOLEAN,               -- event was anchored to an observed jump
-    PRIMARY KEY (game_id, platform, market_id, seq)
-);
-CREATE INDEX IF NOT EXISTS idx_event_odds_action ON event_odds (action);
-"""
+SCHEMA = (
+    'ALTER TABLE golgg_games ADD COLUMN IF NOT EXISTS oe_game_id TEXT;',
+    'CREATE INDEX IF NOT EXISTS idx_golgg_games_oe ON golgg_games (oe_game_id);',
+    """CREATE TABLE IF NOT EXISTS game_alignment (
+        game_id     INT NOT NULL,          -- golgg game id
+        platform    TEXT NOT NULL,
+        market_id   TEXT NOT NULL,
+        team        TEXT,                  -- team the market refers to (YES side)
+        team_side   TEXT,                  -- 'blue' | 'red'
+        start_wall  BIGINT,                -- wall clock at in-game 0:00
+        end_wall    BIGINT,                -- wall clock at nexus / terminal move
+        duration_s  INT,
+        pauses      JSONB,                 -- [{game_time_s, wall_ts, length_s}]
+        n_events    INT, n_matched INT,
+        quality     REAL,                  -- matched / significant events
+        built_at    BIGINT,
+        PRIMARY KEY (game_id, platform, market_id)
+    );""",
+    """CREATE TABLE IF NOT EXISTS event_odds (
+        game_id     INT NOT NULL, platform TEXT NOT NULL, market_id TEXT NOT NULL,
+        seq         INT NOT NULL,
+        time_s      INT, wall_ts BIGINT,
+        action      TEXT, side TEXT, player TEXT, target TEXT,
+        p_before    REAL, p_after REAL,
+        dp          REAL,                  -- market team's odds change
+        dp_actor    REAL,                  -- swing toward the acting side (+ = helped actor)
+        matched     BOOLEAN,               -- event was anchored to an observed jump
+        PRIMARY KEY (game_id, platform, market_id, seq)
+    );""",
+    'CREATE INDEX IF NOT EXISTS idx_event_odds_action ON event_odds (action);',
+)
 
 SIGNIFICANT = {"kill", "baron", "herald", "atakhan", "tower", "inhib", "nexus",
                "grubs"}  # dragons matched via prefix
@@ -66,8 +65,8 @@ PAUSE_MIN = 90                  # residual step above the lag baseline that coun
 
 
 def ensure_schema(conn):
-    conn.execute(SCHEMA)
-    conn.commit()
+    from . import db
+    db.apply_schema(conn, SCHEMA)
 
 
 # ------------------------------------------------------------------ linking

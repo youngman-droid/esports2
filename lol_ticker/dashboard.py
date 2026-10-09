@@ -17,7 +17,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import config, db, kalshi, query
+from . import config, db, kalshi, query, player_rankings
 
 _conn = None
 _conn_lock = threading.Lock()
@@ -870,6 +870,8 @@ def api_live_series(params):
 
 
 ROUTES = {
+    "/api/players/archive": lambda p: player_rankings.archive(),
+    "/api/players/ratings": lambda p: player_rankings.ratings(),
     "/api/status": lambda p: api_status(),
     "/api/live/series": api_live_series,
     "/api/live/games": api_live_games,
@@ -915,6 +917,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path in ("/players/archive", "/players/archive/"):
+            body = player_rankings.PAGE_PATH.with_name("player_archive.html").read_bytes()
+            self._send(200, body, "text/html; charset=utf-8")
+            return
+        if parsed.path in ("/players", "/players/"):
+            with open(player_rankings.PAGE_PATH, "rb") as f:
+                body = f.read()
+            self._send(200, body, "text/html; charset=utf-8")
+            return
         if parsed.path == "/":
             with open(PAGE_PATH, "rb") as f:
                 body = f.read()
@@ -928,6 +939,8 @@ class Handler(BaseHTTPRequestHandler):
             data = route(urllib.parse.parse_qs(parsed.query))
             self._send(200, json.dumps(data, default=str).encode(),
                        "application/json")
+        except player_rankings.RankingsUnavailable as e:
+            self._send(503, json.dumps({"error": str(e)}).encode(), "application/json")
         except Exception as e:
             try:
                 with _conn_lock:

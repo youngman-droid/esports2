@@ -19,47 +19,48 @@ import urllib.request
 import numpy as np
 
 from . import config
+from . import wpx_inputs
 
 np.seterr(all="ignore")
 log = logging.getLogger("wpx")
 OUT_DIR = os.path.join(config.REPO_ROOT, "data", "wpx")
 
-SCHEMA = """
-ALTER TABLE golgg_items ADD COLUMN IF NOT EXISTS gold INT;
-CREATE TABLE IF NOT EXISTS oe_players (
-    game_id TEXT NOT NULL, team TEXT NOT NULL, position TEXT, player TEXT, player_id TEXT,
-    PRIMARY KEY (game_id, team, position)
-);
-CREATE TABLE IF NOT EXISTS oe_ratings (
-    game_id TEXT PRIMARY KEY,       -- OE game
-    elo_blue REAL, elo_red REAL,    -- sequential team Elo before the game
-    pelo_blue REAL, pelo_red REAL,  -- mean sequential player rating before the game
-    n_known_blue INT, n_known_red INT
-);
-ALTER TABLE oe_ratings ADD COLUMN IF NOT EXISTS form_blue REAL;   -- last-10 win rate
-ALTER TABLE oe_ratings ADD COLUMN IF NOT EXISTS form_red REAL;
-ALTER TABLE oe_ratings ADD COLUMN IF NOT EXISTS ngames_blue INT;  -- games played so far
-ALTER TABLE oe_ratings ADD COLUMN IF NOT EXISTS ngames_red INT;
-ALTER TABLE oe_games ADD COLUMN IF NOT EXISTS blue_gold INT;
-ALTER TABLE oe_games ADD COLUMN IF NOT EXISTS red_gold INT;
-ALTER TABLE oe_games ADD COLUMN IF NOT EXISTS gamelength INT;
-ALTER TABLE oe_ratings ADD COLUMN IF NOT EXISTS rapm_team REAL;    -- blue - red, gold/min margin units
-ALTER TABLE oe_ratings ADD COLUMN IF NOT EXISTS rapm_player REAL;  -- blue - red, player ridge ratings summed
-CREATE TABLE IF NOT EXISTS oe_player_elo (
-    pkey      TEXT PRIMARY KEY,     -- OE player_id when present, else IGN
-    name      TEXT,                 -- last seen IGN
-    norm_name TEXT,                 -- lowercase alnum, for live lineup lookup
-    elo       REAL,
-    ngames    INT,
-    last_ts   BIGINT                -- date of the player's newest game
-);
-CREATE INDEX IF NOT EXISTS idx_oe_player_elo_norm ON oe_player_elo (norm_name);
-"""
+SCHEMA = (
+    'ALTER TABLE golgg_items ADD COLUMN IF NOT EXISTS gold INT;',
+    """CREATE TABLE IF NOT EXISTS oe_players (
+        game_id TEXT NOT NULL, team TEXT NOT NULL, position TEXT, player TEXT, player_id TEXT,
+        PRIMARY KEY (game_id, team, position)
+    );""",
+    """CREATE TABLE IF NOT EXISTS oe_ratings (
+        game_id TEXT PRIMARY KEY,       -- OE game
+        elo_blue REAL, elo_red REAL,    -- sequential team Elo before the game
+        pelo_blue REAL, pelo_red REAL,  -- mean sequential player rating before the game
+        n_known_blue INT, n_known_red INT
+    );""",
+    'ALTER TABLE oe_ratings ADD COLUMN IF NOT EXISTS form_blue REAL; -- last-10 win rate',
+    'ALTER TABLE oe_ratings ADD COLUMN IF NOT EXISTS form_red REAL;',
+    'ALTER TABLE oe_ratings ADD COLUMN IF NOT EXISTS ngames_blue INT; -- games played so far',
+    'ALTER TABLE oe_ratings ADD COLUMN IF NOT EXISTS ngames_red INT;',
+    'ALTER TABLE oe_games ADD COLUMN IF NOT EXISTS blue_gold INT;',
+    'ALTER TABLE oe_games ADD COLUMN IF NOT EXISTS red_gold INT;',
+    'ALTER TABLE oe_games ADD COLUMN IF NOT EXISTS gamelength INT;',
+    'ALTER TABLE oe_ratings ADD COLUMN IF NOT EXISTS rapm_team REAL; -- blue - red, gold/min margin units',
+    'ALTER TABLE oe_ratings ADD COLUMN IF NOT EXISTS rapm_player REAL; -- blue - red, player ridge ratings summed',
+    """CREATE TABLE IF NOT EXISTS oe_player_elo (
+        pkey      TEXT PRIMARY KEY,     -- OE player_id when present, else IGN
+        name      TEXT,                 -- last seen IGN
+        norm_name TEXT,                 -- lowercase alnum, for live lineup lookup
+        elo       REAL,
+        ngames    INT,
+        last_ts   BIGINT                -- date of the player's newest game
+    );""",
+    'CREATE INDEX IF NOT EXISTS idx_oe_player_elo_norm ON oe_player_elo (norm_name);',
+)
 
 
 def ensure_schema(conn):
-    conn.execute(SCHEMA)
-    conn.commit()
+    from . import db
+    db.apply_schema(conn, SCHEMA)
 
 
 # ------------------------------------------------------------------ prep
@@ -290,7 +291,7 @@ FEATURE_NAMES = (
 )
 
 
-def _load_game(conn, gid):
+def _load_game(conn, gid, *, item_policy="legacy"):
     g = conn.execute("""SELECT g.*, r.elo_blue AS oe_elo_b, r.elo_red AS oe_elo_r,
                                r.pelo_blue AS oe_pelo_b, r.pelo_red AS oe_pelo_r,
                                r.form_blue, r.form_red, r.ngames_blue, r.ngames_red,
@@ -305,9 +306,16 @@ def _load_game(conn, gid):
         return None
     gold = {}   # minute -> [blue roles 5], [red roles 5]
     cs = {}
+    complete_gold, complete_cs = {}, {}
     for r in conn.execute("SELECT slot, minute, gold, cs FROM golgg_timeline WHERE game_id=%s", (gid,)):
         gold.setdefault(r["minute"], [[0] * 5, [0] * 5])[0 if r["slot"] < 5 else 1][r["slot"] % 5] += (r["gold"] or 0)
         cs.setdefault(r["minute"], [0, 0])[0 if r["slot"] < 5 else 1] += (r["cs"] or 0)
+        if r["gold"] is not None:
+            complete_gold.setdefault(r["minute"], set()).add(r["slot"])
+        if r["cs"] is not None:
+            complete_cs.setdefault(r["minute"], set()).add(r["slot"])
+    gold = {minute: values for minute, values in gold.items() if len(complete_gold.get(minute, ())) == 10}
+    cs = {minute: values for minute, values in cs.items() if len(complete_cs.get(minute, ())) == 10}
     ev = [dict(r) for r in conn.execute(
         "SELECT seq, time_s, action, side, player, target FROM golgg_events WHERE game_id=%s ORDER BY seq", (gid,))]
     g["champs"] = [r["champion"] for r in conn.execute(
@@ -328,8 +336,8 @@ def _load_game(conn, gid):
         "SELECT player, side FROM golgg_players WHERE game_id=%s", (gid,))}
     for e in ev:
         e["victim_side"] = pside.get(e.get("target"))
-    # item purchases with gold value, by side and time
-    items = [dict(r) for r in conn.execute("""
+    # The explicit v2 modeling ablation avoids using incompatible inventories.
+    items = [] if item_policy == "ablated_v1" else [dict(r) for r in conn.execute("""
         SELECT b.build_time AS t, b.event, COALESCE(i.gold, 0) AS gold, p.side
         FROM golgg_builds b JOIN golgg_players p ON p.game_id = b.game_id AND p.player_id = b.player_id
         LEFT JOIN golgg_items i ON i.item_id = b.item_id
@@ -354,36 +362,41 @@ def _interp(series_by_min, t_s, f):
 
 
 def _hp_observation(hpmap, t_s):
-    """Latest HP/death observation at or before ``t_s`` (max age 90 s).
+    """Latest causally available HP interval, with worst-case age <=90 seconds.
 
-    New builds attach an exact game-clock timestamp to each row.  The fallback
-    for old callers is previous-minute-only; neither path can select m+1.
+    Archive wrappers must be clock-certified by wpx_inputs; unwrapped nominal
+    minute rows never become observations. Explicit-clock callers remain usable.
     """
-    if hpmap:
-        timed = [r for r in hpmap.values() if isinstance(r, dict) and "_clock_s" in r
-                 and r["_clock_s"] <= t_s and t_s - r["_clock_s"] <= 90]
-        if timed:
-            wrapped = max(timed, key=lambda r: r["_clock_s"])
-            row = wrapped.get("data") or {}
-        else:
-            m = int(math.floor(t_s / 60.0)) - 1
-            row = hpmap.get(m)
-        if row:
-            hpb = [x for x in (row.get("hpb") or []) if x is not None]
-            hpr = [x for x in (row.get("hpr") or []) if x is not None]
-            lvb, lvr = row.get("lvb") or [], row.get("lvr") or []
-            if len(hpb) == 5 and len(hpr) == 5:
-                lvl = (sum(lvb) - sum(lvr)) / 5.0 if len(lvb) == 5 and len(lvr) == 5 else 0.0
-                return {
-                    "features": [sum(hpb) - sum(hpr),
-                                 float(sum(1 for x in hpb if x < 0.3)),
-                                 float(sum(1 for x in hpr if x < 0.3)),
-                                 lvl, 1.0],
-                    "dead_blue": int(sum(x <= 0.0 for x in hpb)),
-                    "dead_red": int(sum(x <= 0.0 for x in hpr)),
-                }
-    return {"features": [0.0, 0.0, 0.0, 0.0, 0.0],
-            "dead_blue": None, "dead_red": None}
+    eligible = []
+    for wrapped in (hpmap or {}).values():
+        upper = wrapped.get("_clock_s") if isinstance(wrapped, dict) else None
+        lower = wrapped.get("_clock_lo_s", upper) if isinstance(wrapped, dict) else None
+        if (isinstance(upper, (int, float)) and isinstance(lower, (int, float))
+                and wrapped.get("_clock_trusted", True) and 0 <= lower <= upper <= t_s
+                and t_s - lower <= 90):
+            eligible.append(wrapped)
+    for wrapped in sorted(eligible, key=lambda r: r["_clock_s"], reverse=True):
+        row = wrapped.get("data") or {}
+        hpb, hpr = row.get("hpb") or [], row.get("hpr") or []
+        lvb, lvr = row.get("lvb") or [], row.get("lvr") or []
+        if (len(hpb) == 5 and len(hpr) == 5 and all(
+                isinstance(x, (int, float)) and math.isfinite(x) and 0 <= x <= 1 for x in hpb + hpr)):
+            lvl = ((sum(lvb) - sum(lvr)) / 5.0 if len(lvb) == 5 and len(lvr) == 5
+                   and all(isinstance(x, (int, float)) and math.isfinite(x) for x in lvb + lvr) else 0.0)
+            lo = wrapped.get("_clock_lo_s", wrapped["_clock_s"])
+            return {
+                "features": [sum(hpb) - sum(hpr), float(sum(x < 0.3 for x in hpb)),
+                             float(sum(x < 0.3 for x in hpr)), lvl, 1.0],
+                "dead_blue": int(sum(x <= 0.0 for x in hpb)), "dead_red": int(sum(x <= 0.0 for x in hpr)),
+                "clock_lo_s": lo, "clock_hi_s": wrapped["_clock_s"],
+                "age_upper_s": t_s - lo, "source": wrapped.get("_clock_source", "explicit_game_clock"),
+                "observation_ts": wrapped.get("_observation_ts"), "origin_ts": wrapped.get("_origin_ts"),
+            }
+    reasons = sorted({r.get("_clock_source", "unverified_clock") for r in (hpmap or {}).values() if isinstance(r, dict)})
+    return {"features": [0.0, 0.0, 0.0, 0.0, 0.0], "dead_blue": None, "dead_red": None,
+            "clock_lo_s": None, "clock_hi_s": None, "age_upper_s": None,
+            "observation_ts": None, "origin_ts": None,
+            "source": "missing_before_or_stale" if eligible or not reasons else "missing:" + reasons[0]}
 
 
 def _hp_feats(hpmap, t_s):
@@ -404,11 +417,12 @@ def _state(g, gold, cs, ev, items, idx, t_s, hpmap=None):
     last_elder = {"blue": -1e9, "red": -1e9}
     last_baron_any = -1e9; last_dragon_any = -1e9
     kills_recent = 0
-    dead = [0, 0]          # players currently on a respawn timer, per side
+    dead = wpx_inputs.estimated_deaths(ev[:idx], t_s)["counts"]
     nexus_tw = [0, 0]      # nexus turrets lost, per side (taken by the other side)
     last_kill_t = -1e9
-    respawn = min(60.0, 8.0 + 1.6 * t)   # rough respawn-timer scale by game minute
     for e in ev[:idx]:
+        if e.get("time_s") is None or e["time_s"] > t_s:
+            continue
         a = e["action"] or ""; side = e["side"]
         if side not in ("blue", "red"):
             continue
@@ -436,10 +450,6 @@ def _state(g, gold, cs, ev, items, idx, t_s, hpmap=None):
             last_kill_t = max(last_kill_t, et)
             if et >= t_s - 120:
                 kills_recent += sgn
-            if et >= t_s - respawn:
-                vs = e.get("victim_side")
-                if vs in ("blue", "red"):
-                    dead[0 if vs == "blue" else 1] += 1
     hp = _hp_observation(hpmap, t_s)
     # When official-feed health is available it is the same source used live
     # and is strictly better than the historical approximate respawn window.
@@ -458,6 +468,8 @@ def _state(g, gold, cs, ev, items, idx, t_s, hpmap=None):
                 items_done += sgn
         elif it["event"] == "ITEM_SOLD":
             item_gold -= sgn * it["gold"]
+            if it["gold"] >= 2200:
+                items_done -= sgn
     elo_oe = ((g["oe_elo_b"] or 1500) - (g["oe_elo_r"] or 1500)) / 400.0
     pelo_oe = ((g["oe_pelo_b"] or 1500) - (g["oe_pelo_r"] or 1500)) / 400.0
     draft = 0.0
@@ -489,13 +501,30 @@ def _state(g, gold, cs, ev, items, idx, t_s, hpmap=None):
     return x
 
 
-def build(conn, sample_every_s=60):
-    """Assemble the state dataset + market probs at event instants; cache to npz."""
-    os.makedirs(OUT_DIR, exist_ok=True)
+def build(conn, sample_every_s=60, *, output_path=None, before=None, origin_cache_dir=None):
+    """Write an isolated v2 input dataset; never replace the consumed states.npz.
+
+    ``before`` is exclusive and applies to all game rows. Existing source priors
+    remain historical pre-game priors; model transforms/calibration must be refit
+    by the downstream experiment on this dataset's chronological train splits.
+    """
+    from pathlib import Path
+    path = os.path.abspath(output_path or os.path.join(OUT_DIR, "states_inputs_v2.npz"))
+    if path == os.path.abspath(os.path.join(OUT_DIR, "states.npz")):
+        raise ValueError("v2 rebuild cannot overwrite legacy states.npz")
+    if os.path.exists(path) or os.path.exists(path + ".manifest.json"):
+        raise FileExistsError(path)
+    if sample_every_s <= 0:
+        raise ValueError("sample_every_s must be positive")
+    if before is not None:
+        import datetime
+        datetime.date.fromisoformat(before)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     gids = [r["game_id"] for r in conn.execute(
         """SELECT game_id FROM golgg_games WHERE winner_side IS NOT NULL AND duration_s IS NOT NULL
            AND EXISTS (SELECT 1 FROM golgg_timeline t WHERE t.game_id = golgg_games.game_id)
-           ORDER BY game_id""")]
+           AND (%s::date IS NULL OR date < %s::date)
+           ORDER BY game_id""", (before, before))]
     # market probs at event instants, blue-oriented, averaged per platform
     mk = {}
     for r in conn.execute("""
@@ -506,31 +535,42 @@ def build(conn, sample_every_s=60):
         p = r["p_before"] if r["team_side"] == "blue" else 1 - r["p_before"]
         mk.setdefault((r["game_id"], r["seq"]), {}).setdefault(r["platform"], []).append(p)
     g2e = {r["golgg_game_id"]: r["esports_game_id"] for r in conn.execute(
-        "SELECT golgg_game_id, esports_game_id FROM feed_games WHERE status = 'scraped' AND golgg_game_id IS NOT NULL")} \
+        """SELECT golgg_game_id, min(esports_game_id) esports_game_id FROM feed_games
+           WHERE status = 'scraped' AND golgg_game_id IS NOT NULL
+           GROUP BY golgg_game_id HAVING count(*) = 1""")} \
         if conn.execute("SELECT to_regclass('feed_games') r").fetchone()["r"] else {}
     hp_all = {}
+    origins = {}
+    origin_dir = Path(origin_cache_dir or os.path.join(OUT_DIR, "feed_origins_v1"))
+    for origin_file in sorted(origin_dir.glob("[0-9]*.json")):
+        origin = json.loads(origin_file.read_text())
+        origins[origin["esports_game_id"]] = origin
+    if conn.execute("SELECT to_regclass('feed_input_origins_v1') r").fetchone()["r"]:
+        for record in conn.execute("SELECT esports_game_id,provenance FROM feed_input_origins_v1"):
+            origins.setdefault(record["esports_game_id"], record["provenance"])
     if g2e:
-        hp_rows = list(conn.execute("SELECT esports_game_id, minute, ts, data FROM feed_minutes"))
-        first_ts = {}
-        for r in hp_rows:
-            if r["ts"] is not None:
-                first_ts[r["esports_game_id"]] = min(first_ts.get(r["esports_game_id"], r["ts"]), r["ts"])
-        for r in hp_rows:
-            t0_hp = first_ts.get(r["esports_game_id"])
-            wrapped = {"data": r["data"], "_clock_s": (r["ts"] - t0_hp) if t0_hp is not None and r["ts"] is not None else r["minute"] * 60}
-            hp_all.setdefault(r["esports_game_id"], {})[r["minute"]] = wrapped
-        log.info("wpx: HP feed minutes for %d games", len(hp_all))
+        for row in conn.execute("SELECT esports_game_id, minute, ts, data FROM feed_minutes ORDER BY esports_game_id,ts"):
+            hp_all.setdefault(row["esports_game_id"], []).append(dict(row))
+        log.info("wpx: HP source rows for %d games; recovered origins %d", len(hp_all), len(origins))
+    telemetry = {k: [] for k in ("prediction_clock_s", "hp_clock_lo_s", "hp_clock_hi_s", "hp_age_upper_s",
+                                "hp_observation_ts", "hp_origin_ts", "hp_source", "death_source", "death_uncertain")}
+    input_reason_counts = {}
     X, y, gid_arr, t_arr, seq_arr, pm_arr, ks_arr, date_arr = [], [], [], [], [], [], [], []
     patch_arr, league_arr = [], []
     C = []   # champion ids per state: 10 slots (blue 0-4, red 5-9)
     champ_ids = {}
     t0 = time.time()
     for n, gid in enumerate(gids):
-        d = _load_game(conn, gid)
+        d = _load_game(conn, gid, item_policy="ablated_v1")
         if not d:
             continue
         g, gold, cs, ev, items = d
-        hpmap = hp_all.get(g2e.get(gid))
+        egid = g2e.get(gid)
+        hpmap = wpx_inputs.bracket_archived_observations(
+            hp_all.get(egid, []), origins.get(egid), gold, g.get("champs") or [])
+        for observation in hpmap.values():
+            reason = observation["_clock_source"]
+            input_reason_counts[reason] = input_reason_counts.get(reason, 0) + 1
         won = 1.0 if g["winner_side"] == "blue" else 0.0
         times = sorted(set([(t_s, -1) for t_s in range(0, g["duration_s"] + 1, sample_every_s)] +
                            [(e["time_s"], e["seq"]) for e in ev if e["time_s"] is not None]))
@@ -543,7 +583,17 @@ def build(conn, sample_every_s=60):
             while seq >= 0 and jj < len(ev) and ev[jj]["seq"] < seq:
                 jj += 1
             idx = jj if seq >= 0 else j
-            X.append(_state(g, gold, cs, ev, items, idx, max(0, t_s - (1 if seq >= 0 else 0)), hpmap))
+            prediction_clock = max(0, t_s - (1 if seq >= 0 else 0))
+            X.append(_state(g, gold, cs, ev, items, idx, prediction_clock, hpmap))
+            hp = _hp_observation(hpmap, prediction_clock)
+            telemetry["prediction_clock_s"].append(prediction_clock)
+            for target, key in (("hp_clock_lo_s", "clock_lo_s"), ("hp_clock_hi_s", "clock_hi_s"),
+                                ("hp_age_upper_s", "age_upper_s"), ("hp_observation_ts", "observation_ts"),
+                                ("hp_origin_ts", "origin_ts")):
+                telemetry[target].append(hp[key] if hp[key] is not None else np.nan)
+            telemetry["hp_source"].append(hp["source"])
+            telemetry["death_source"].append("official_hp_interval" if hp["dead_blue"] is not None else "victim_timer_estimate")
+            telemetry["death_uncertain"].append(hp["dead_blue"] is None or hp["age_upper_s"] > 0)
             C.append([champ_ids.setdefault(c, len(champ_ids)) for c in (g.get("champs") or [])][:10] + [-1] * (10 - len(g.get("champs") or [])))
             y.append(won); gid_arr.append(gid); t_arr.append(t_s); seq_arr.append(seq)
             date_arr.append(str(g.get("date") or ""))
@@ -554,16 +604,47 @@ def build(conn, sample_every_s=60):
             ks_arr.append(np.mean(m["kalshi"]) if m and "kalshi" in m else np.nan)
         if n % 300 == 0:
             log.info("wpx: built %d/%d games, %d states (%.0fs)", n, len(gids), len(y), time.time() - t0)
-    path = os.path.join(OUT_DIR, "states.npz")
-    np.savez_compressed(path, X=np.array(X, dtype=np.float32), y=np.array(y, dtype=np.float32),
-                        gid=np.array(gid_arr), t=np.array(t_arr), seq=np.array(seq_arr),
-                        date=np.array(date_arr),
-                        patch=np.array(patch_arr), league=np.array(league_arr),
-                        pm=np.array(pm_arr, dtype=np.float32), ks=np.array(ks_arr, dtype=np.float32),
-                        names=np.array(FEATURE_NAMES), C=np.array(C, dtype=np.int16),
-                        champ_names=np.array([c for c, _ in sorted(champ_ids.items(), key=lambda kv: kv[1])]))
-    log.info("wpx: saved %s (%d states, %d games, %d PM points, %d Kalshi points)",
-             path, len(y), len(set(gid_arr)), int(np.sum(~np.isnan(pm_arr))), int(np.sum(~np.isnan(ks_arr))))
+    X = np.array(X, dtype=np.float32)
+    hp_used = X[:, FEATURE_NAMES.index("has_hp")] > 0
+    clock_hi = np.asarray(telemetry["hp_clock_hi_s"])
+    future = hp_used & (clock_hi > np.asarray(telemetry["prediction_clock_s"]))
+    if np.any(future) or np.any(hp_used & ~np.isfinite(clock_hi)):
+        raise AssertionError("future or unproven HP join")
+    if np.any(hp_used & (np.asarray(telemetry["hp_age_upper_s"]) > 90)):
+        raise AssertionError("stale HP join")
+    contract_json = json.dumps(wpx_inputs.INPUT_CONTRACT, sort_keys=True, separators=(",", ":"))
+    payload = dict(X=X, y=np.array(y, dtype=np.float32), gid=np.array(gid_arr), t=np.array(t_arr),
+                   seq=np.array(seq_arr), date=np.array(date_arr), patch=np.array(patch_arr), league=np.array(league_arr),
+                   pm=np.array(pm_arr, dtype=np.float32), ks=np.array(ks_arr, dtype=np.float32),
+                   names=np.array(FEATURE_NAMES), C=np.array(C, dtype=np.int16),
+                   champ_names=np.array([c for c, _ in sorted(champ_ids.items(), key=lambda kv: kv[1])]),
+                   input_contract=np.array(contract_json), input_contract_sha256=np.array(wpx_inputs.INPUT_CONTRACT_SHA256),
+                   cutoff_exclusive=np.array(before or ""), item_policy=np.array("ablated_v1"),
+                   **{k: np.asarray(v) for k, v in telemetry.items()})
+    with open(path, "xb") as handle:
+        np.savez_compressed(handle, **payload)
+    digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    manifest = {
+        "dataset": path, "sha256": digest, "input_contract": wpx_inputs.INPUT_CONTRACT,
+        "input_contract_sha256": wpx_inputs.INPUT_CONTRACT_SHA256, "cutoff_exclusive": before,
+        "rows": len(y), "games": len(set(gid_arr)), "max_date": max(date_arr) if date_arr else None,
+        "hp_rows": int(hp_used.sum()), "hp_fixed_rows": int((hp_used & (np.asarray(seq_arr) < 0)).sum()),
+        "zero_future_timestamp_joins": bool(not np.any(future)), "future_timestamp_joins": int(future.sum()),
+        "max_hp_age_upper_s": float(np.nanmax(telemetry["hp_age_upper_s"])) if hp_used.any() else None,
+        "observation_clock_sources": input_reason_counts,
+        "item_policy": "ablated_v1", "inventory_limitation": "stored ITEM_UNDO lacks before/after IDs; global item prices are not patch matched",
+        "clock_assumptions": ["same champion/role/participant slots", "cumulative per-player totalGold monotone within attempt",
+                              "opening with zero totalGold is pregame", "sparse unknown pauses widen/exclude intervals"],
+        "identity_limitation": "legacy HP arrays omit participant IDs; same-slot order and no entirely missed same-champion remake are assumptions, not fully verified attempt identity",
+        "death_limitation": "victim timer is estimated; carried HP is measured at observation, not current prediction instant",
+        "origin_cache": str(origin_dir), "origin_count": len(origins),
+        "origin_provenance_sha256": hashlib.sha256(json.dumps(origins, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+        "source_sha256": {str(source): hashlib.sha256(source.read_bytes()).hexdigest()
+                          for source in (Path(__file__), Path(wpx_inputs.__file__))},
+    }
+    with open(path + ".manifest.json", "x") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
+    log.info("wpx: saved %s (%d states, %d games, %d causally bounded HP states)", path, len(y), len(set(gid_arr)), hp_used.sum())
     return path
 
 
@@ -1033,9 +1114,9 @@ def fit_full(*_args, **_kwargs):
     min_improvement = _kwargs.pop("min_improvement", 0.0)
     if _kwargs:
         raise TypeError("unknown production-refresh options: %s" % sorted(_kwargs))
-    wpdeploy.refresh(dataset_path=dataset_path, bootstrap=bootstrap,
-                     min_improvement=min_improvement)
-    return GAM_LIVE_MODEL_PATH
+    result = wpdeploy.refresh(dataset_path=dataset_path, bootstrap=bootstrap,
+                              min_improvement=min_improvement)
+    return result.get("candidate_path", GAM_LIVE_MODEL_PATH)
 
 
 def live_vector(state, names):
@@ -1168,6 +1249,16 @@ def predict_live(state, blue_champs=(), red_champs=(), path=LIVE_MODEL_PATH,
     it is never used as an implicit fallback.  The log-odds breakdown fields
     always describe the GAM component.
     """
+    combination_error = None
+    if path == LIVE_MODEL_PATH:
+        from . import wpcombined_prod
+        try:
+            combination = wpcombined_prod.load_active(LIVE_STACK_PATH)
+            if combination is not None:
+                return wpcombined_prod.predict(combination, state, blue_champs, red_champs)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            combination_error = str(error)
+            log.warning("Production combination unavailable; incumbent fallback: %s", error)
     gam_out = None
     if os.path.exists(path):
         try:
@@ -1188,6 +1279,10 @@ def predict_live(state, blue_champs=(), red_champs=(), path=LIVE_MODEL_PATH,
                    "reason": "blend disabled or non-production model path"})
     if not stack.get("deployed") or float(stack.get("w_gam", 1.0)) >= 1.0:
         gam_out["stack_reason"] = stack.get("reason")
+        if combination_error:
+            gam_out["input_warnings"] = list(gam_out.get("input_warnings") or [])+["production_combination_unavailable"]
+            gam_out["combination_error"] = combination_error
+            gam_out["reliability"] = "reduced"
         return gam_out
     legacy_out = _predict_live_legacy(state, blue_champs, red_champs)
     clip = lambda p: min(1.0 - 1e-6, max(1e-6, float(p)))

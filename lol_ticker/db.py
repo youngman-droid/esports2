@@ -10,6 +10,7 @@ Conventions:
   - book_snapshots / trades / price_points / candles are hypertables
 """
 import json
+import re
 
 import psycopg
 from psycopg.rows import dict_row
@@ -134,6 +135,38 @@ def connect(dsn=None):
             pass  # compression unavailable on this build; fine
     conn.autocommit = False
     return conn
+
+
+_ADD_COLUMN_RE = re.compile(
+    r"^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?P<table>[\w.]+)\s+ADD\s+COLUMN\s+"
+    r"IF\s+NOT\s+EXISTS\s+(?P<column>\w+)\b", re.I | re.S)
+
+
+def _column_exists(conn, table, column):
+    row = conn.execute(
+        """SELECT 1 FROM pg_attribute
+           WHERE attrelid=to_regclass(%s) AND attname=%s
+             AND attnum > 0 AND NOT attisdropped""",
+        (table, column)).fetchone()
+    return row is not None
+
+
+def apply_schema(conn, statements):
+    """Apply explicit DDL statements, releasing locks after each one.
+
+    Schema setup commits caller work, as the original ensure_schema helpers
+    did. Skip existing columns: even a no-op ADD COLUMN takes an exclusive
+    lock. A blocked migration fails after 60 seconds; SET LOCAL expires with
+    its transaction on success or failure.
+    """
+    conn.commit()
+    for stmt in statements:
+        with conn.transaction():
+            conn.execute("SET LOCAL lock_timeout = '60s'")
+            m = _ADD_COLUMN_RE.match(stmt)
+            if m and _column_exists(conn, m.group("table"), m.group("column")):
+                continue
+            conn.execute(stmt)
 
 
 def upsert_market(conn, m, now):

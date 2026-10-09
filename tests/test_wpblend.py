@@ -80,7 +80,7 @@ class LiveBlendTests(unittest.TestCase):
                 json.dump(artifact, fh)
             return wpblend.predict_live(
                 0.55, 20.0, {"polymarket": 0.60, "kalshi": 0.58}, path=path,
-                after_draft=after_draft)
+                after_draft=after_draft, model_kind=wpgam.MODEL_KIND)
 
     def test_live_artifact_can_select_best_two_way_blend(self):
         out = self._predict(self._artifact({

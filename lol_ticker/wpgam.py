@@ -35,7 +35,9 @@ from . import config
 
 
 log = logging.getLogger("wpgam")
-MODEL_KIND = "wpgam_v8_recency_series"
+LEGACY_MODEL_KIND = "wpgam_v8_recency_series"
+MODEL_KIND = "wpgam_v9_physical_gold"
+SUPPORTED_MODEL_KINDS = {LEGACY_MODEL_KIND, MODEL_KIND}
 OUT_DIR = os.path.join(config.REPO_ROOT, "data", "wpx")
 MODEL_PATH = os.path.join(OUT_DIR, "model_live_gam.npz")
 
@@ -69,7 +71,7 @@ PREGAME_FEATURES = ["elo_oe", "pelo_oe", "form_diff", "elo_gg",
 
 # Every feature here can be constructed identically from a historical WPX row
 # and an official-feed live state.  Differences are oriented toward blue.
-STATE_FEATURES = [
+LEGACY_STATE_FEATURES = [
     "gold_k", "gold_mom", "cs_k",
     "gold_top_alloc", "gold_jng_alloc", "gold_mid_alloc", "gold_bot_alloc",
     "d_kill", "d_tower", "d_dragon", "d_baron", "baron_active",
@@ -78,6 +80,26 @@ STATE_FEATURES = [
     "hp_pool", "lvl_k", "has_hp",
     "gold_rel", "t_since_kill",
 ]
+
+# Every additional player's gold now moves only nondecreasing inputs. The
+# role additions shrink toward the shared gold_k curve under the usual L2.
+GOLD_ROLES = ("top", "jng", "mid", "bot", "sup")
+STATE_FEATURES = (LEGACY_STATE_FEATURES[:3]
+                  + ["gold_" + role for role in GOLD_ROLES]
+                  + LEGACY_STATE_FEATURES[7:])
+
+# Discrete game events must survive even when fewer than 0.5% of observations
+# occupy either signed tail. Bounds describe physical support, not prevalence.
+DISCRETE_BOUNDS = {
+    "d_kill": (-100., 100.), "d_tower": (-11., 11.),
+    "d_dragon": (-20., 20.), "d_baron": (-10., 10.),
+    "baron_active": (-1., 1.), "d_inhib": (-3., 3.),
+    "d_elder": (-10., 10.), "elder_active": (-1., 1.),
+    "soul": (-1., 1.), "dead_adv": (-5., 5.),
+    "dead_adv_sq": (-25., 25.), "dead_count_sq_adv": (-25., 25.),
+    "dead_base_pressure": (-40., 40.), "has_hp": (0., 1.),
+    "series_diff": (-4., 4.),
+}
 
 # A non-negative coefficient at each time knot makes the partial derivative of
 # log-odds with respect to these oriented advantages non-negative everywhere.
@@ -89,6 +111,7 @@ MONOTONE_FEATURES = {
     "dead_adv_sq", "dead_count_sq_adv", "dead_base_pressure",
     "hp_pool", "lvl_k", "gold_rel",
 }
+MONOTONE_FEATURES.update("gold_" + role for role in GOLD_ROLES)
 
 
 def _sigmoid(z):
@@ -154,7 +177,7 @@ def _death_features(dead_blue, dead_red, towers_blue, towers_red,
     return dead_adv, dead_adv_sq, dead_count_sq_adv, dead_base_pressure
 
 
-def state_values_from_matrix(X, names):
+def state_values_from_matrix(X, names, feature_names=None):
     """Production feature contract from stored WPX rows."""
     X = np.asarray(X)
     idx = {str(n): i for i, n in enumerate(names)}
@@ -179,12 +202,16 @@ def state_values_from_matrix(X, names):
         _column(X, idx, "gold_rel"),
         _column(X, idx, "t_since_kill", default=10.0),
     ])
-    if vals.shape[1] != len(STATE_FEATURES):
+    if vals.shape[1] != len(LEGACY_STATE_FEATURES):
         raise AssertionError("state feature contract is out of sync")
-    return vals
+    values = dict(zip(LEGACY_STATE_FEATURES, vals.T))
+    values.update({"gold_" + r: _column(X, idx, "gold_" + r,
+                                      default=0.0) for r in GOLD_ROLES})
+    requested = STATE_FEATURES if feature_names is None else feature_names
+    return np.column_stack([values[str(n)] for n in requested])
 
 
-def state_values_from_live(state):
+def state_values_from_live(state, feature_names=None):
     """Same production feature contract from an official-feed state dict."""
     s = dict(state)
     gk = float(s.get("gold_diff_k", 0.0) or 0.0)
@@ -222,7 +249,11 @@ def state_values_from_live(state):
         gk / total_gold_k if total_gold_k > 1.0 else 0.0,
         float(s.get("t_since_kill_min", 10.0)),
     ]
-    return np.asarray(vals, dtype=np.float64)
+    values = dict(zip(LEGACY_STATE_FEATURES, vals))
+    values.update({"gold_" + r: float(role[i] or 0.0)
+                   for i, r in enumerate(GOLD_ROLES)})
+    requested = STATE_FEATURES if feature_names is None else feature_names
+    return np.asarray([values[str(n)] for n in requested], dtype=np.float64)
 
 
 def pregame_values_from_matrix(X, names):
@@ -255,10 +286,20 @@ def _champ_matrix(C, n_champs):
     return out
 
 
-def _scale_fit(raw, q=0.005):
+def _scale_fit(raw, q=0.005, feature_names=None):
     raw = np.asarray(raw, dtype=np.float64)
     lo = np.quantile(raw, q, axis=0)
     hi = np.quantile(raw, 1.0 - q, axis=0)
+    if feature_names is not None:
+        if len(feature_names) != raw.shape[1]:
+            raise ValueError("scaler feature names do not match its columns")
+        for i, name in enumerate(feature_names):
+            if str(name) in DISCRETE_BOUNDS:
+                lo[i], hi[i] = DISCRETE_BOUNDS[str(name)]
+    # A rare continuous feature must not accidentally become constant either.
+    collapsed = (hi <= lo) & (np.ptp(raw, axis=0) > 0)
+    lo[collapsed] = raw[:, collapsed].min(axis=0)
+    hi[collapsed] = raw[:, collapsed].max(axis=0)
     clipped = np.clip(raw, lo, hi)
     mean = clipped.mean(axis=0)
     std = clipped.std(axis=0)
@@ -306,7 +347,7 @@ def _fit_static_logit(A, y, reg, bounds=None, weights=None, maxiter=250):
 def fit_pregame(raw, C, y, champ_names, l2=10.0, l2_champ=150.0):
     raw = np.asarray(raw, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
-    mean, std, lo, hi = _scale_fit(raw)
+    mean, std, lo, hi = _scale_fit(raw, feature_names=PREGAME_FEATURES)
     Z = _scale_apply(raw, mean, std, lo, hi)
     S = _champ_matrix(C, len(champ_names))
     A = np.column_stack([np.ones(len(y)), Z, S])
@@ -342,13 +383,32 @@ def _fold_ids(gids, k=5, seed=19):
     return folds
 
 
-def oof_pregame(raw, C, y, gids, champ_names, k=5):
+def _stack_folds(gids, k=5, dates=None, seed=19):
+    """Earlier-date cross-fitting; neutral scores for the small warmup block."""
+    if dates is None:
+        folds = _fold_ids(gids, k, seed)
+        for f in range(folds.max() + 1):
+            yield folds != f, folds == f
+        return
+    dates = np.asarray(dates).astype(str)
+    if len(dates) != len(gids) or np.any(dates == ""):
+        raise ValueError("stacking requires a date for every game")
+    ordered = np.sort(dates)
+    warmup = min(100, max(1, len(dates) // 5))
+    start = ordered[min(warmup, len(ordered) - 1)]
+    yield np.zeros(len(dates), dtype=bool), dates < start
+    for block in np.array_split(np.unique(dates[dates >= start]), k):
+        if len(block):
+            yield dates < block[0], (dates >= block[0]) & (dates <= block[-1])
+
+
+def oof_pregame(raw, C, y, gids, champ_names, k=5, dates=None):
     raw = np.asarray(raw)
-    folds = _fold_ids(gids, k)
     out_team = np.zeros(len(y), dtype=np.float64)
     out_champ = np.zeros(len(y), dtype=np.float64)
-    for f in range(folds.max() + 1):
-        tr, te = folds != f, folds == f
+    for tr, te in _stack_folds(gids, k, dates):
+        if not tr.any() or not te.any():
+            continue
         model = fit_pregame(raw[tr], C[tr], y[tr], champ_names)
         _, team, champ = predict_pregame(model, raw[te], C[te])
         out_team[te] = model["intercept"] + team
@@ -410,7 +470,7 @@ def champ_state_scores(beta, C):
 
 
 def oof_champ_state(X, names, C, y, gid, rows_pool, train_gids, n_champs,
-                    k=5, seed=41):
+                    k=5, seed=41, dates=None):
     """Out-of-fold champion-state score per training game.
 
     ``rows_pool`` are the candidate fitting rows (fixed-minute training rows);
@@ -418,16 +478,16 @@ def oof_champ_state(X, names, C, y, gid, rows_pool, train_gids, n_champs,
     """
     gid = np.asarray(gid)
     train_gids = np.asarray(train_gids)
-    folds = _fold_ids(train_gids, k, seed=seed)
-    fold_of = {g: f for g, f in zip(train_gids, folds)}
     pool_gid = gid[rows_pool]
-    scores = {}
+    scores = {g: 0.0 for g in train_gids}
     game_rows = _game_rows(gid)
     row_of_game = {g: i for g, i in zip(gid[game_rows], game_rows)}
-    for f in range(folds.max() + 1):
-        fit_rows = rows_pool[np.asarray([fold_of.get(g) != f for g in pool_gid])]
+    for tr, te in _stack_folds(train_gids, k, dates, seed):
+        if not tr.any() or not te.any():
+            continue
+        fit_rows = rows_pool[np.isin(pool_gid, train_gids[tr])]
         beta = fit_champ_state(X, names, C, y, fit_rows, n_champs)
-        for g in train_gids[folds == f]:
+        for g in train_gids[te]:
             row = row_of_game[g]
             scores[g] = float(champ_state_scores(beta, np.asarray(C)[row:row + 1])[0])
     return scores
@@ -456,7 +516,7 @@ def fit_state_model(raw, y, gids, t_min, knots=TIME_KNOTS, l2=STATE_L2,
     feature_names = PRIOR_INPUTS + STATE_FEATURES
     if raw.shape[1] != len(feature_names):
         raise ValueError("wrong state feature width")
-    mean, std, lo, hi = _scale_fit(raw)
+    mean, std, lo, hi = _scale_fit(raw, feature_names=feature_names)
     Z = _scale_apply(raw, mean, std, lo, hi)
     B = time_basis(t_min, knots)
     w = _game_balanced_weights(gids)
@@ -519,6 +579,18 @@ def predict_state(model, raw, t_min, components=False):
     B = time_basis(t_min, model["knots"])
     effect = np.einsum("ik,fk->if", B, model["theta"], optimize=True)
     parts = np.column_stack([effect[:, 0], Z * effect[:, 1:]])
+    probability_clip = model.get("calibration_probability_clip")
+    if probability_clip is not None:
+        bounds = np.asarray(probability_clip, dtype=np.float64)
+        if (bounds.shape != (2,) or not np.isfinite(bounds).all()
+                or not 0 < bounds[0] < bounds[1] < 1):
+            raise ValueError("invalid calibration probability clipping bounds")
+        raw_eta = parts.sum(axis=1)
+        p = np.clip(_sigmoid(raw_eta), bounds[0], bounds[1])
+        calibrated_input = np.log(p / (1.0 - p))
+        # The explicit intercept correction keeps reported components summing
+        # to the actual logit, including saturation before calibration.
+        parts[:, 0] += calibrated_input - raw_eta
     slope = float(model.get("cal_slope", 1.0))
     intercept = float(model.get("cal_intercept", 0.0))
     parts *= slope
@@ -539,12 +611,7 @@ def _fit_platt_logits(logits, y, gids):
 
 
 def _fit_calibration_intercept(logits, y, gids, slope):
-    """Re-center a fixed calibration slope on the final fitted model.
-
-    A temporal calibrator is estimated with an older submodel.  Once the model
-    is refit on all available games, carrying that submodel's intercept forward
-    would double-count any base-rate drift present in the calibration block.
-    """
+    """Legacy intercept fitter, retained for experiments, not final calibration."""
     logits, y, gids = map(np.asarray, (logits, y, gids))
     weights = _game_balanced_weights(gids)
     intercept = 0.0
@@ -559,23 +626,6 @@ def _fit_calibration_intercept(logits, y, gids, slope):
     return intercept
 
 
-def calibrate_state_model(raw, y, gids, t_min, folds=3,
-                          l2=STATE_L2, smooth=STATE_SMOOTH):
-    """Game-level OOF Platt calibration for the final state surface."""
-    raw, y, gids, t_min = map(np.asarray, (raw, y, gids, t_min))
-    ug = np.unique(gids)
-    gf = _fold_ids(ug, folds, seed=29)
-    fold_of = {g: f for g, f in zip(ug, gf)}
-    rf = np.asarray([fold_of[g] for g in gids])
-    logits = np.zeros(len(y), dtype=np.float64)
-    for f in range(gf.max() + 1):
-        tr, te = rf != f, rf == f
-        sub = fit_state_model(raw[tr], y[tr], gids[tr], t_min[tr],
-                              l2=l2, smooth=smooth, maxiter=220)
-        logits[te] = predict_state(sub, raw[te], t_min[te], components=True)[1]
-    return _fit_platt_logits(logits, y, gids)
-
-
 def _game_rows(gid):
     gid = np.asarray(gid)
     _, first = np.unique(gid, return_index=True)
@@ -584,16 +634,16 @@ def _game_rows(gid):
 
 def _temporal_state_calibration(tr_pre, tr_C, tr_y, tr_gid, tr_dates,
                                 champ_names, state, y, gid, t_s, seq,
-                                cs_by_gid=None,
+                                X, names, C, champ_state_all_rows=True,
+                                champ_state_folds=CHAMP_STATE_FOLDS,
                                 l2=STATE_L2, smooth=STATE_SMOOTH):
     """Calibrate on the newest date block using only earlier games.
 
     This mirrors deployment more closely than random folds: both the pregame
     stack and the state model that score the calibration games are trained
     strictly on earlier dates.  Complete match dates stay in one block.
-    ``cs_by_gid`` carries the main fit's out-of-fold champion-state scores;
-    reusing them here (instead of refitting the champion block early-only)
-    biases only the calibration estimate, in the conservative direction.
+    Every upstream learner is refitted inside the earlier block. No label
+    from the calibration block can affect the state model or its features.
     """
     tr_dates = np.asarray(tr_dates).astype(str)
     if len(tr_dates) < 100 or np.any(tr_dates == ""):
@@ -606,14 +656,22 @@ def _temporal_state_calibration(tr_pre, tr_C, tr_y, tr_gid, tr_dates,
 
     pre = fit_pregame(tr_pre[early], tr_C[early], tr_y[early], champ_names)
     team_oof, champ_oof = oof_pregame(
-        tr_pre[early], tr_C[early], tr_y[early], tr_gid[early], champ_names, k=5)
+        tr_pre[early], tr_C[early], tr_y[early], tr_gid[early], champ_names,
+        k=5, dates=tr_dates[early])
     prior = {g: (pt, pc) for g, pt, pc in
              zip(tr_gid[early], team_oof, champ_oof)}
     _, team, champ = predict_pregame(pre, tr_pre[~early], tr_C[~early])
     prior.update({g: (pre["intercept"] + pt, pc) for g, pt, pc in
                   zip(tr_gid[~early], team, champ)})
 
-    cs_by_gid = cs_by_gid or {}
+    early_rows = np.isin(gid, tr_gid[early])
+    cs_rows = np.flatnonzero(early_rows if champ_state_all_rows else
+                            early_rows & (seq < 0))
+    cs_beta = fit_champ_state(X, names, C, y, cs_rows, len(champ_names))
+    cs_by_gid = oof_champ_state(
+        X, names, C, y, gid, cs_rows, tr_gid[early], len(champ_names),
+        k=champ_state_folds, dates=tr_dates[early])
+    cs_by_gid.update(zip(tr_gid[~early], champ_state_scores(cs_beta, tr_C[~early])))
     training_games = set(tr_gid.tolist())
     rows = (seq < 0) & np.asarray([g in training_games for g in gid])
     row_gid = gid[rows]
@@ -634,6 +692,8 @@ def fit_arrays(X, y, gid, t_s, seq, C, names, champ_names, train_games=None,
                state_smooth=STATE_SMOOTH, calibration="temporal",
                champ_state_all_rows=CHAMP_STATE_ALL_ROWS,
                champ_state_folds=CHAMP_STATE_FOLDS):
+    if calibration not in {"temporal", "none"}:
+        raise ValueError("calibration must be 'temporal' or 'none'")
     X, y, gid, t_s, seq, C = map(np.asarray, (X, y, gid, t_s, seq, C))
     game_i = _game_rows(gid)
     game_gid, game_y, game_C = gid[game_i], y[game_i], C[game_i]
@@ -646,7 +706,9 @@ def fit_arrays(X, y, gid, t_s, seq, C, names, champ_names, train_games=None,
     tr_gid = game_gid[train_games]
     tr_pre, tr_C, tr_y = game_pre[train_games], game_C[train_games], game_y[train_games]
     pre_full = fit_pregame(tr_pre, tr_C, tr_y, champ_names)
-    pre_team_oof, pre_champ_oof = oof_pregame(tr_pre, tr_C, tr_y, tr_gid, champ_names, k=pregame_folds)
+    tr_dates = game_dates[train_games] if game_dates is not None else None
+    pre_team_oof, pre_champ_oof = oof_pregame(
+        tr_pre, tr_C, tr_y, tr_gid, champ_names, k=pregame_folds, dates=tr_dates)
 
     train_gid_set = set(tr_gid.tolist())
     row_train = np.asarray([g in train_gid_set for g in gid])
@@ -655,7 +717,7 @@ def fit_arrays(X, y, gid, t_s, seq, C, names, champ_names, train_games=None,
     cs_rows = np.where(row_train if champ_state_all_rows else minute_train)[0]
     cs_beta = fit_champ_state(X, names, C, y, cs_rows, n_champs)
     cs_by_gid = oof_champ_state(X, names, C, y, gid, cs_rows, tr_gid,
-                                n_champs, k=champ_state_folds)
+                                n_champs, k=champ_state_folds, dates=tr_dates)
 
     prior_by_gid = {g: (pt, pc) for g, pt, pc in zip(tr_gid, pre_team_oof, pre_champ_oof)}
     other = ~train_games
@@ -675,23 +737,24 @@ def fit_arrays(X, y, gid, t_s, seq, C, names, champ_names, train_games=None,
     if calibration == "temporal" and game_dates is not None:
         temporal = _temporal_state_calibration(
             tr_pre, tr_C, tr_y, tr_gid, game_dates[train_games], champ_names,
-            state, y, gid, t_s, seq, cs_by_gid=cs_by_gid,
+            state, y, gid, t_s, seq, X, names, C,
+            champ_state_all_rows=champ_state_all_rows,
+            champ_state_folds=champ_state_folds,
             l2=state_l2, smooth=state_smooth)
     if temporal is None:
-        cal_intercept, cal_slope = calibrate_state_model(
-            raw_train, y_train, gid_train, time_train,
-            l2=state_l2, smooth=state_smooth)
-        calibration_used = "game_oof"
+        # Random folds over precomputed stacked scores can expose calibration
+        # labels to upstream learners. With insufficient temporal history,
+        # leave predictions uncalibrated instead of silently taking that path.
+        cal_intercept, cal_slope = 0.0, 1.0
+        calibration_used = ("none" if calibration == "none" else
+                            "identity_insufficient_temporal_data")
     else:
         cal_intercept, cal_slope = temporal
         calibration_used = "temporal_holdout"
     state_model = fit_state_model(raw_train, y_train, gid_train, time_train,
                                   l2=state_l2, smooth=state_smooth)
-    if temporal is not None:
-        final_logits = predict_state(state_model, raw_train, time_train,
-                                     components=True)[1]
-        cal_intercept = _fit_calibration_intercept(
-            final_logits, y_train, gid_train, cal_slope)
+    # Keep the held-out intercept as well as the slope. Recentring on fitted
+    # training predictions would no longer be held-out calibration.
     state_model["cal_intercept"] = cal_intercept
     state_model["cal_slope"] = cal_slope
     state_model["calibration_method"] = calibration_used
@@ -707,7 +770,7 @@ def save_model(model, path=MODEL_PATH, meta=None):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     pre, state = model["pregame"], model["state"]
     payload = {
-        "kind": np.asarray(MODEL_KIND),
+        "kind": np.asarray(model.get("kind", MODEL_KIND)),
         "pre_names": np.asarray(PREGAME_FEATURES),
         "pre_mean": pre["mean"], "pre_std": pre["std"], "pre_lo": pre["lo"], "pre_hi": pre["hi"],
         "pre_intercept": np.asarray(pre["intercept"]), "pre_team_beta": pre["team_beta"],
@@ -716,6 +779,9 @@ def save_model(model, path=MODEL_PATH, meta=None):
         "state_lo": state["lo"], "state_hi": state["hi"], "theta": state["theta"],
         "time_knots": state["knots"], "cal_intercept": np.asarray(state.get("cal_intercept", 0.0)),
         "cal_slope": np.asarray(state.get("cal_slope", 1.0)),
+        "calibration_probability_clip": np.asarray(
+            [] if state.get("calibration_probability_clip") is None
+            else state["calibration_probability_clip"], dtype=np.float64),
         "state_l2": np.asarray(state.get("l2", STATE_L2)),
         "state_smooth": np.asarray(state.get("smooth", STATE_SMOOTH)),
         "calibration_method": np.asarray(state.get("calibration_method", "unknown")),
@@ -733,9 +799,10 @@ def save_model(model, path=MODEL_PATH, meta=None):
 def load_model(path=MODEL_PATH):
     d = np.load(path, allow_pickle=False)
     kind = str(d["kind"].item())
-    if kind != MODEL_KIND:
+    if kind not in SUPPORTED_MODEL_KINDS:
         raise ValueError("unsupported model kind %s" % kind)
     return {
+        "kind": kind,
         "pregame": {
             "mean": d["pre_mean"], "std": d["pre_std"], "lo": d["pre_lo"], "hi": d["pre_hi"],
             "intercept": float(d["pre_intercept"]), "team_beta": d["pre_team_beta"],
@@ -746,6 +813,10 @@ def load_model(path=MODEL_PATH):
             "lo": d["state_lo"], "hi": d["state_hi"], "theta": d["theta"], "knots": d["time_knots"],
             "cal_intercept": float(d["cal_intercept"]) if "cal_intercept" in d.files else 0.0,
             "cal_slope": float(d["cal_slope"]) if "cal_slope" in d.files else 1.0,
+            "calibration_probability_clip": (
+                d["calibration_probability_clip"].tolist()
+                if "calibration_probability_clip" in d.files and d["calibration_probability_clip"].size
+                else None),
             "l2": float(d["state_l2"]) if "state_l2" in d.files else STATE_L2,
             "smooth": float(d["state_smooth"]) if "state_smooth" in d.files else STATE_SMOOTH,
             "calibration_method": (str(d["calibration_method"].item())
@@ -800,15 +871,20 @@ def _live_champ_row(champ_names, blue_champs, red_champs):
 
 
 def predict_live(state, blue_champs=(), red_champs=(), path=MODEL_PATH):
-    model = load_model(path)
+    return predict_live_model(load_model(path), state, blue_champs, red_champs)
+
+
+def predict_live_model(model, state, blue_champs=(), red_champs=(), rounded=True):
+    """Artifact-aware live inference; audits retain full probability precision."""
     pre = model["pregame"]
     C, unknown = _live_champ_row(pre["champ_names"], blue_champs, red_champs)
     pre_raw = pregame_values_from_live(state)
     _, pre_team, pre_champ = predict_pregame(pre, pre_raw, C)
     pre_team_total = pre["intercept"] + float(pre_team[0])
     champ_state = float(champ_state_scores(model["champ_state"]["beta"], C)[0])
+    state_names = list(model["state"]["feature_names"])[len(PRIOR_INPUTS):]
     state_raw = np.concatenate([[pre_team_total, float(pre_champ[0]), champ_state],
-                                state_values_from_live(state)])[None, :]
+                                state_values_from_live(state, state_names)])[None, :]
     t_min = float(state.get("t_min", 0.0) or 0.0)
     p, eta, parts = predict_state(model["state"], state_raw, [t_min], components=True)
 
@@ -821,7 +897,7 @@ def predict_live(state, blue_champs=(), red_champs=(), path=MODEL_PATH):
     lo_champ_state = float(parts[0, 3])
     lo_champ = lo_champ_pre + lo_champ_state
     lo_time = float(parts[0, 0])
-    state_parts = dict(zip(STATE_FEATURES, parts[0, 1 + len(PRIOR_INPUTS):]))
+    state_parts = dict(zip(state_names, parts[0, 1 + len(PRIOR_INPUTS):]))
     lo_state = float(sum(state_parts.values()))
     lo_deaths = float(sum(state_parts.get(n, 0.0) for n in
                           ("dead_adv", "dead_adv_sq", "dead_count_sq_adv",
@@ -835,7 +911,7 @@ def predict_live(state, blue_champs=(), red_champs=(), path=MODEL_PATH):
         PREGAME_FEATURES, pre_raw, pre["lo"], pre["hi"])
                    if value < lo or value > hi]
     state_clipped = [name for name, value, lo, hi in zip(
-        PRIOR_INPUTS + STATE_FEATURES, state_raw[0],
+        list(model["state"]["feature_names"]), state_raw[0],
         model["state"]["lo"], model["state"]["hi"])
                      if value < lo or value > hi]
     input_warnings = []
@@ -843,11 +919,15 @@ def predict_live(state, blue_champs=(), red_champs=(), path=MODEL_PATH):
         input_warnings.append("unknown_champions")
     if float(state.get("has_hp", 0.0) or 0.0) <= 0.0 and t_min >= 5.0:
         input_warnings.append("hp_unavailable")
-    if not any(state.get(name) is not None for name in PREGAME_FEATURES):
+    # series_diff is injected by every live caller (0.0 for game one), so it
+    # must not count as evidence that team ratings were found.
+    if not any(state.get(name) is not None for name in PREGAME_FEATURES
+               if name != "series_diff"):
         input_warnings.append("pregame_priors_unavailable")
     if pre_clipped or state_clipped:
         input_warnings.append("inputs_clipped_to_training_range")
-    return {"p_blue": round(float(p[0]), 4), "unknown_champions": unknown,
+    return {"p_blue": round(float(p[0]), 4) if rounded else float(p[0]),
+            "unknown_champions": unknown,
             "lo_prior": round(lo_prior, 3), "lo_state": round(lo_state, 3),
             "lo_champ": round(lo_champ, 3), "lo_time": round(lo_time, 3),
             "lo_champ_state": round(lo_champ_state, 3),
@@ -859,7 +939,7 @@ def predict_live(state, blue_champs=(), red_champs=(), path=MODEL_PATH):
             "input_warnings": input_warnings,
             "clipped_inputs": sorted(set(pre_clipped + state_clipped)),
             "reliability": ("reduced" if input_warnings else "normal"),
-            "model_kind": MODEL_KIND}
+            "model_kind": model["kind"]}
 
 
 def _date_split(d, holdout=0.2):

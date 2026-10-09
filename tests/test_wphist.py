@@ -9,6 +9,28 @@ from lol_ticker import wpgam, wphist
 
 
 class HistoricalOddsTests(unittest.TestCase):
+    def test_training_rejects_incompatible_base_before_loading_data(self):
+        with tempfile.TemporaryDirectory() as td:
+            base_path = os.path.join(td, "base.npz")
+            dataset_path = os.path.join(td, "missing-states.npz")
+            for kind, feature_names in (
+                    (wpgam.LEGACY_MODEL_KIND,
+                     wpgam.PRIOR_INPUTS + wpgam.LEGACY_STATE_FEATURES),
+                    (wpgam.MODEL_KIND,
+                     wpgam.PRIOR_INPUTS + wpgam.LEGACY_STATE_FEATURES)):
+                with self.subTest(kind=kind):
+                    model = self._base_model()
+                    model["kind"] = kind
+                    model["state"]["feature_names"] = np.array(feature_names)
+                    wpgam.save_model(model, base_path)
+                    with self.assertRaisesRegex(ValueError, "current source can train"):
+                        wphist.run(dataset_path=dataset_path, base_path=base_path)
+            # A compatible base reaches dataset loading; training does not
+            # require replacing or promoting the base model.
+            wpgam.save_model(self._base_model(), base_path)
+            with self.assertRaises(FileNotFoundError):
+                wphist.run(dataset_path=dataset_path, base_path=base_path)
+
     @staticmethod
     def _base_model():
         npre = len(wpgam.PREGAME_FEATURES)

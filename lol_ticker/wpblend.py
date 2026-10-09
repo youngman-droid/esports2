@@ -297,16 +297,18 @@ def _encode(model):
 def load_model(path=LATENCY_MODEL_PATH):
     with open(path) as fh:
         artifact = json.load(fh)
-    if artifact.get("base_model_kind") != wpgam.MODEL_KIND:
-        raise ValueError("blend artifact expects %s, live model is %s" %
-                         (artifact.get("base_model_kind"), wpgam.MODEL_KIND))
+    if artifact.get("base_model_kind") not in wpgam.SUPPORTED_MODEL_KINDS:
+        raise ValueError("unsupported blend base model %s" % artifact.get("base_model_kind"))
     return artifact
 
 
 def predict_live(model_p, t_min, markets, path=LATENCY_MODEL_PATH,
-                 after_draft=False):
+                 after_draft=False, model_kind=None):
     """Blend the latest model state with available blue-oriented market quotes."""
     artifact = load_model(path)
+    actual_kind = model_kind or wpgam.load_model()["kind"]
+    if artifact["base_model_kind"] != actual_kind:
+        raise ValueError("blend base-model contract mismatch")
     models = (artifact.get("after_draft") if after_draft else None) or artifact
     available = {p: float(v) for p, v in markets.items()
                  if p in ("polymarket", "kalshi") and v is not None}

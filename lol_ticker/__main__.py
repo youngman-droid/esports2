@@ -5,6 +5,9 @@ import os
 import sys
 from datetime import datetime, timezone
 
+import psycopg
+from psycopg.rows import dict_row
+
 from . import collector, config, db, query
 
 
@@ -67,6 +70,9 @@ def main():
     wp = sub.add_parser("wpa", help="odds-free: Elo + in-game win-probability model + event WPA")
     wp.add_argument("--rebuild", action="store_true")
     sub.add_parser("draftfree", help="odds-free draft model: outcomes on Elo + draft features")
+    sq = sub.add_parser("sqpairs", help="solo-queue matchup/synergy prior (Lolalytics)")
+    sq.add_argument("step", choices=["refresh", "build"],
+                    help="refresh: fetch live/new patches (weekly per page) then build; build: tables only")
     lv = sub.add_parser("live", help="live win probability from the LoL Esports stats feed")
     lv.add_argument("game_id", nargs="?", default=None, help="lolesports game id (default: the in-progress game)")
     lv.add_argument("--blue-elo", type=float, default=None, help="blue minus red Elo diff (optional prior)")
@@ -80,29 +86,55 @@ def main():
                     help="manual resolution winner side (requires --game-id)")
     sh.add_argument("--bootstrap", type=int, default=5000,
                     help="paired game-block bootstrap draws for score")
+    sh.add_argument("--protocol", default=None,
+                    help="score/status an older ledger by protocol id (default: active)")
 
     wx = sub.add_parser("wpx", help="odds-free modeling and historical evaluation")
-    wx.add_argument("step", choices=["prep", "build", "fit", "gam-eval", "bench",
+    wx.add_argument("step", choices=["prep", "build", "postdraft-build", "fit", "gam-eval", "bench",
                                      "rolling", "stack-eval", "hist-blend", "blend",
                                      "blend-live", "eval", "all"])
     wx.add_argument("--lead", type=int, default=45,
                     help="market lead in seconds for blend-live (default: 45)")
     wx.add_argument("--windows", type=int, default=3,
                     help="expanding chronological windows for rolling evaluation")
+    wx.add_argument("--out", help="build/postdraft-build: new immutable NPZ path")
+    wx.add_argument("--before", help="build/postdraft-build: exclusive historical cutoff, YYYY-MM-DD")
 
     al = sub.add_parser("align", help="align gol.gg timelines with odds; build event swings")
     al.add_argument("--rebuild", action="store_true", help="recompute existing alignments too")
 
     args = p.parse_args()
+    if args.cmd == "wpx":
+        if args.step == "all":
+            p.error("wpx all is disabled: corrected-input builds and legacy default evaluators "
+                    "use different datasets. Run prep separately, then an explicitly dated "
+                    "wpx build --out PATH --before YYYY-MM-DD and the corrected-input experiment.")
+        if args.step in ("build", "postdraft-build"):
+            if not args.out or not args.before:
+                p.error("wpx %s requires --out PATH and --before YYYY-MM-DD; " % args.step +
+                        "the immutable artifact is not installed as the default training dataset")
+            try:
+                if datetime.strptime(args.before, "%Y-%m-%d").strftime("%Y-%m-%d") != args.before:
+                    raise ValueError("noncanonical date")
+            except ValueError:
+                p.error("--before must be a valid date in YYYY-MM-DD format")
+        elif args.out or args.before:
+            p.error("--out and --before are supported only by wpx build/postdraft-build")
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s")
     # Cached-model operations are deliberately usable without PostgreSQL.
-    # ``prep``, ``build`` and ``all`` still need the source database.
+    # ``prep`` and ``build`` still need the source database.
     cached_wpx = args.cmd == "wpx" and args.step in (
         "fit", "gam-eval", "rolling", "stack-eval", "bench",
         "hist-blend", "blend", "eval")
-    conn = None if cached_wpx else db.connect(args.dsn)
+    if args.cmd == "wpx" and args.step == "postdraft-build":
+        # Historical export must not invoke schema bootstrap or any DB writes.
+        conn = psycopg.connect(args.dsn, row_factory=dict_row,
+                               options="-c default_transaction_read_only=on")
+        conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+    else:
+        conn = None if cached_wpx else db.connect(args.dsn)
 
     if args.cmd == "discover":
         collector.discover(conn, include_closed_pm=args.all)
@@ -157,6 +189,9 @@ def main():
     elif args.cmd == "draftfree":
         from . import draft
         draft.fit_outcome_model(conn)
+    elif args.cmd == "sqpairs":
+        from . import sqpairs
+        print(sqpairs.refresh(conn) if args.step == "refresh" else sqpairs.build_tables())
     elif args.cmd == "live":
         import json as _json
         from . import live
@@ -185,16 +220,24 @@ def main():
             print("resolved={resolved} voided={voided} pending={pending} protocol={protocol_id}".format(**r))
         elif args.action == "score":
             shadow.resolve_outcomes(conn)
-            r = shadow.score(conn, bootstrap=max(0, args.bootstrap))
+            r = shadow.score(conn, bootstrap=max(0, args.bootstrap),
+                             protocol_id=args.protocol)
             shadow.report_score(r)
         else:
-            shadow.report_status(shadow.status(conn))
+            shadow.report_status(shadow.status(conn, protocol_id=args.protocol))
     elif args.cmd == "wpx":
         from . import wpx
-        if args.step in ("prep", "all"):
+        if args.step == "prep":
             wpx.prep(conn)
-        if args.step in ("build", "all"):
-            wpx.build(conn)
+        if args.step == "build":
+            path = wpx.build(conn, output_path=args.out, before=args.before)
+            print("isolated corrected-input dataset:", path)
+            print("Default fit/eval inputs are unchanged; use this path in the corrected-input experiment.")
+        if args.step == "postdraft-build":
+            from . import wppostdraft
+            path = wppostdraft.build(conn, output_path=args.out, before=args.before)
+            print("isolated draft-complete dataset:", path)
+            print("One row per map; no gameplay timeline is required.")
         if args.step in ("fit", "all"):
             path = wpx.fit_full()
             print("constrained live model:", path)

@@ -23,60 +23,55 @@ PRE_OFFSET = 16 * 60    # sample this long before actual game start (pre-draft)
 POST_OFFSET = 2 * 60    # and this long after (post-draft, minimal game info)
 MATCH_WINDOW = 12 * 3600  # market series start vs game start tolerance
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS oe_games (
-    game_id     TEXT PRIMARY KEY,
-    league      TEXT,
-    date_utc    BIGINT,          -- actual game start (draft ends here)
-    game_num    INT,
-    patch       TEXT,
-    blue_team   TEXT,
-    red_team    TEXT,
-    winner      TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_oe_games_date ON oe_games (date_utc);
-
-CREATE TABLE IF NOT EXISTS oe_picks (
-    game_id     TEXT NOT NULL,
-    team        TEXT NOT NULL,
-    champion    TEXT NOT NULL,
-    position    TEXT,
-    pick_order  INT,
-    PRIMARY KEY (game_id, team, champion)
-);
-
-CREATE TABLE IF NOT EXISTS oe_bans (
-    game_id     TEXT NOT NULL,
-    team        TEXT NOT NULL,      -- the team that banned
-    champion    TEXT NOT NULL,
-    ban_order   INT,
-    PRIMARY KEY (game_id, team, champion)
-);
-
--- ridge-regression coefficients: log-odds effect on a team's win prob
-CREATE TABLE IF NOT EXISTS draft_model (
-    feature     TEXT PRIMARY KEY,   -- e.g. own_pick:Ashe, syn:Ashe|Rumble
-    coef        DOUBLE PRECISION,
-    n           INT
-);
-
-CREATE TABLE IF NOT EXISTS draft_deltas (
-    platform    TEXT NOT NULL,
-    market_id   TEXT NOT NULL,
-    oe_game_id  TEXT NOT NULL,
-    team        TEXT,            -- OE team name (canonical)
-    opponent    TEXT,
-    league      TEXT,
-    game_start  BIGINT,
-    game_num    INT,
-    pre_p       REAL,
-    post_p      REAL,
-    delta       REAL,
-    won         INT,
-    PRIMARY KEY (platform, market_id)
-);
-CREATE INDEX IF NOT EXISTS idx_dd_game ON draft_deltas (oe_game_id);
-"""
+SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS oe_games (
+        game_id     TEXT PRIMARY KEY,
+        league      TEXT,
+        date_utc    BIGINT,          -- actual game start (draft ends here)
+        game_num    INT,
+        patch       TEXT,
+        blue_team   TEXT,
+        red_team    TEXT,
+        winner      TEXT
+    );""",
+    'CREATE INDEX IF NOT EXISTS idx_oe_games_date ON oe_games (date_utc);',
+    """CREATE TABLE IF NOT EXISTS oe_picks (
+        game_id     TEXT NOT NULL,
+        team        TEXT NOT NULL,
+        champion    TEXT NOT NULL,
+        position    TEXT,
+        pick_order  INT,
+        PRIMARY KEY (game_id, team, champion)
+    );""",
+    """CREATE TABLE IF NOT EXISTS oe_bans (
+        game_id     TEXT NOT NULL,
+        team        TEXT NOT NULL,      -- the team that banned
+        champion    TEXT NOT NULL,
+        ban_order   INT,
+        PRIMARY KEY (game_id, team, champion)
+    ); -- ridge-regression coefficients: log-odds effect on a team's win prob""",
+    """CREATE TABLE IF NOT EXISTS draft_model (
+        feature     TEXT PRIMARY KEY,   -- e.g. own_pick:Ashe, syn:Ashe|Rumble
+        coef        DOUBLE PRECISION,
+        n           INT
+    );""",
+    """CREATE TABLE IF NOT EXISTS draft_deltas (
+        platform    TEXT NOT NULL,
+        market_id   TEXT NOT NULL,
+        oe_game_id  TEXT NOT NULL,
+        team        TEXT,            -- OE team name (canonical)
+        opponent    TEXT,
+        league      TEXT,
+        game_start  BIGINT,
+        game_num    INT,
+        pre_p       REAL,
+        post_p      REAL,
+        delta       REAL,
+        won         INT,
+        PRIMARY KEY (platform, market_id)
+    );""",
+    'CREATE INDEX IF NOT EXISTS idx_dd_game ON draft_deltas (oe_game_id);',
+)
 
 _SUFFIXES = {"esports", "esport", "e-sports", "gaming", "team", "club", "gg"}
 _TEAM_ALIASES = {
@@ -87,6 +82,9 @@ _TEAM_ALIASES = {
     # A missed alias here silently zeroes every team prior for the match
     # (team_priors logs a warning when that happens).
     "cloud9 kia": "cloud9",
+    # CBLOL schedule sponsor name; exchanges list RED Canids.
+    "red kalunga": "red canids",
+    "red canids kalunga": "red canids",
     # 2026-08-29 audit of every current feed name vs gol.gg/OE coverage
     # (scratch: team_audit).  Keys are the feed name's norm, values the
     # stored name's norm.  Never map an Academy/Challengers roster onto its
@@ -98,11 +96,18 @@ _TEAM_ALIASES = {
     "saigon warrior": "saigon warriors",                # VCS (feed drops the s)
     "tp hcm sn cybercore": "sn cybercore",              # VCS (city sponsor prefix)
     "brod friends": "brod n friends",                   # NLC ("&" vs "n")
-    "kabum eports": "kabum",                            # CBLOL feed typo of Esports
+    # CBLOL feed typo of Esports; gol.gg/OE now store "KaBuM! Ilha das Lendas"
+    "kabum eports": "kabum ilha das lendas",
     "bro challengers": "hanjin brion challengers",      # LCK Challengers tags
     "dk challengers": "dplus kia challengers",
     "dns challengers": "dn soopers challengers",
     "ns challengers": "nongshim academy",
+    # 2026-09-03 shadow-ledger audit: feed names that ran with no team prior
+    # although gol.gg rates the team under a longer/shorter name.
+    "kt challengers": "kt rolster challengers",         # LCK Challengers
+    "gamespace m c": "gamespace mce",                   # Hellenic Legends League
+    "up2u meavedron": "meavedron",                      # Rift Legends (sponsor prefix)
+    "devils one x kmt": "dv1 instreamly",               # Rift Legends: Kalshi vs feed name
 }
 
 
@@ -116,8 +121,8 @@ def norm_team(name):
 
 
 def ensure_schema(conn):
-    conn.execute(SCHEMA)
-    conn.commit()
+    from . import db
+    db.apply_schema(conn, SCHEMA)
 
 
 # ------------------------------------------------------------------ OE load
@@ -573,15 +578,29 @@ def _oe_elo(conn, k=30.0, base=1500.0):
     return out
 
 
+# Solo-queue matchup/synergy prior (sqpairs) as ONE ridge-penalised input.
+SQ_PAIR_FEATURE = "__sq_pair__"
+SQ_PAIR_ENABLED = True
+
+
 def fit_outcome_model(conn, lam=300.0, iters=400, lr=0.05, min_support=60,
-                      exclude=None, table="draft_outcome_games"):
+                      exclude=None, table="draft_outcome_games", sq_pair=None,
+                      holdout_since=None, write=True):
     """Logistic regression of 'blue won' on Elo prior + draft features, over
     ALL Oracle's Elixir games (no market data).  Sparse gradient descent.
     Stores coefficients, holdout metrics, and per-(game, team) draft edges:
-    edge = P(win | elo + draft) - P(win | elo)."""
+    edge = P(win | elo + draft) - P(win | elo).
+
+    sq_pair: include the solo-queue pair score (default SQ_PAIR_ENABLED; silently
+    off when no tables exist).  holdout_since (unix ts): newest-date holdout
+    instead of the random 20%.  write=False: no DB writes; per-game holdout
+    predictions are returned for gating."""
     import numpy as np
-    conn.execute(OUTCOME_SCHEMA)
-    conn.commit()
+    from . import sqpairs
+    use_sq = (SQ_PAIR_ENABLED if sq_pair is None else sq_pair) and sqpairs.scorer() is not None
+    if write:
+        conn.execute(OUTCOME_SCHEMA)
+        conn.commit()
     elo = _oe_elo(conn)
     games = conn.execute("""
         SELECT g.game_id, g.blue_team, g.red_team, g.winner, g.patch, g.league, g.date_utc,
@@ -601,7 +620,12 @@ def fit_outcome_model(conn, lam=300.0, iters=400, lr=0.05, min_support=60,
                "own_roles": {c: (p or "") for c, p in g["bp"]}, "enemy_roles": {c: (p or "") for c, p in g["rp"]},
                "own_bans": sorted(set(g["bb"] or [])), "enemy_bans": sorted(set(g["rb"] or []))}
         eb, er = elo[g["game_id"]]
-        rows.append({"g": g, "feats": _features(row), "elo": (eb - er) / 400.0,
+        sq = 0.0
+        if use_sq:
+            roles = [dict((p, c) for c, p in g[k]) for k in ("bp", "rp")]
+            if all(set(sqpairs.OE2L) <= set(r) for r in roles):
+                sq = sqpairs.draft_score(g["patch"], *[[r[p] for p in sqpairs.OE2L] for r in roles])
+        rows.append({"g": g, "feats": _features(row), "elo": (eb - er) / 400.0, "sq": sq,
                      "y": 1.0 if g["winner"] == g["blue_team"] else 0.0})
     counts = {}
     for r in rows:
@@ -610,9 +634,14 @@ def fit_outcome_model(conn, lam=300.0, iters=400, lr=0.05, min_support=60,
     keep = sorted(f for f, n in counts.items() if n >= min_support or not _is_interaction(f))
     idx = {f: i + 2 for i, f in enumerate(keep)}   # 0 = bias, 1 = elo_diff
     nf = len(idx) + 2
+    sq_col = None
+    if use_sq:
+        sq_col = nf; nf += 1
     ri, ci = [], []
     for i, r in enumerate(rows):
         ri += [i, i]; ci += [0, 1]
+        if use_sq and r["sq"]:
+            ri.append(i); ci.append(sq_col)
         for f in r["feats"]:
             j = idx.get(f)
             if j is not None:
@@ -621,10 +650,15 @@ def fit_outcome_model(conn, lam=300.0, iters=400, lr=0.05, min_support=60,
     vals = np.ones(len(ri))
     elo_v = np.array([r["elo"] for r in rows])
     vals[ci == 1] = elo_v[ri[ci == 1]]
+    if use_sq:
+        sq_v = np.array([r["sq"] for r in rows])
+        vals[ci == sq_col] = sq_v[ri[ci == sq_col]]
     y = np.array([r["y"] for r in rows])
     n = len(rows)
     rng = np.random.default_rng(5)
     te_mask = rng.random(n) < 0.2
+    if holdout_since is not None:
+        te_mask = np.array([r["g"]["date_utc"] >= holdout_since for r in rows])
     # games to keep out of training entirely (their predictions are then
     # out-of-sample, e.g. for use as a feature in downstream models)
     excl = np.array([r["g"]["game_id"] in exclude for r in rows]) if exclude else np.zeros(n, dtype=bool)
@@ -660,6 +694,13 @@ def fit_outcome_model(conn, lam=300.0, iters=400, lr=0.05, min_support=60,
         grad[2:] = 0.0
         beta_elo -= lr * grad / max(1.0, (~te_mask).sum() / 50.0)
     ll_elo = logloss(predict(beta_elo)[te_mask], y[te_mask])
+    if not write:
+        return {"games": n, "features": nf, "ll_full": ll_full, "ll_elo": ll_elo,
+                "sq_coef": float(beta_tr[sq_col]) if use_sq else None,
+                "holdout": [{"game_id": r["g"]["game_id"], "date_utc": r["g"]["date_utc"],
+                             "league": r["g"]["league"], "blue_team": r["g"]["blue_team"],
+                             "red_team": r["g"]["red_team"], "y": r["y"], "sq": r["sq"], "p": float(pp)}
+                            for r, pp, m in zip(rows, predict(beta_tr), te_mask) if m]}
     beta = train(~excl)
     # per-game edges with the full model
     p_full = predict(beta)
@@ -670,10 +711,14 @@ def fit_outcome_model(conn, lam=300.0, iters=400, lr=0.05, min_support=60,
         cur.execute("DELETE FROM draft_outcome_model")
         cur.executemany("INSERT INTO draft_outcome_model (feature, coef, n) VALUES (%s,%s,%s)",
                         [("__bias__", float(beta[0]), n), ("__elo_diff__", float(beta[1]), n)] +
-                        [(f, float(beta[j]), counts[f]) for f, j in idx.items()], returning=False)
+                        [(f, float(beta[j]), counts[f]) for f, j in idx.items()] +
+                        ([(SQ_PAIR_FEATURE, float(beta[sq_col]), int(np.sum(sq_v != 0)))] if use_sq else []),
+                        returning=False)
         cur.execute("""INSERT INTO draft_outcome_meta (key, value) VALUES ('fit', %s)
                        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""",
                     (json.dumps({"games": n, "features": nf, "lambda": lam,
+                                 "sq_pair_coef": float(beta[sq_col]) if use_sq else None,
+                                 "sq_pair_scale": sqpairs.SCALE if use_sq else None,
                                  "holdout_logloss_full": round(ll_full, 4),
                                  "holdout_logloss_elo_only": round(ll_elo, 4),
                                  "fitted_at": int(time.time())}),))

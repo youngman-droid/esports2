@@ -1,0 +1,534 @@
+{
+  "cohort": {
+    "all_dataset_fixed_states": 500122,
+    "all_dataset_games": 15408,
+    "first_date": "2026-05-01",
+    "last_date": "2026-09-02",
+    "replay_games": 3097,
+    "replay_states": 99408
+  },
+  "input_sha256": {
+    "dataset": "408b0e7b37ff6402bcbbe14a21da5b05314cbe8da4770037a1d9716a3413de4c",
+    "major_dataset": "782eaea67d1341d40ef7e7c2804f3e889870f0b2964c2949cf21f792af558fdc",
+    "manifest": "5db3ef751205c9d719f7a54102ef5dcb35e2ceef71250d21400340c3863dec27",
+    "model": "fed34df9a7831a1d11c83d81a4b53f63661f108338890af737dbcda085c46589",
+    "plan": "7ffeefeaeadaee1c4ee448db45485e94972ffb00392cbcaea17a0183d1bc81a8",
+    "predictions": "8fbd25df4649f0f8c44054c2ff192f2c605c8f19a46906ec50a7a0d0c4db2a25",
+    "registry": "041a49cb43d811a517d00ced46c4b947fafbff3b4f340642eb82ef6e51ae070e",
+    "resources": "429aa43c2010b0f5eea8d04ed0b54dee77603129cef0aabdbaa878948e8128d5",
+    "saved_scores": "5cd4990ffc9af3fdb3fdfbb94b5dcd00b278bf05a43af4e0c1be84d8a55e62b3"
+  },
+  "notes": [
+    "Slice games are rebalanced within each slice; HP-present and HP-missing games can overlap.",
+    "OE prior missing-or-even is a feature proxy, not a verified missingness label.",
+    "Leave-month-out checks remove scored rows only; they do not refit monthly models.",
+    "Cluster intervals are descriptive and unadjusted for multiple inspected slices."
+  ],
+  "protocol": "Exploratory saved-prediction audit; no new model selection or confirmatory outcome block.",
+  "replay_league_game_counts": {
+    "Arabian League 2026 Spring": 20,
+    "Arabian League 2026 Spring Playoffs": 16,
+    "Arabian League 2026 Summer": 64,
+    "Arabian League 2026 Summer Playoffs": 8,
+    "CBLOL 2026 Split 1": 10,
+    "CBLOL 2026 Split 1 Playoffs": 39,
+    "CBLOL 2026 Split 2": 62,
+    "CD 2026 Split 1 Playoffs": 41,
+    "CD 2026 Split 2": 7,
+    "CD 2026 Split 2 Playoffs": 31,
+    "EBL 2026 Spring Playoffs": 35,
+    "EBL 2026 Summer": 37,
+    "EBL 2026 Summer Playoffs": 10,
+    "EMEA Masters 2026 Spring Main Event": 70,
+    "EMEA Masters 2026 Spring Play-In": 8,
+    "EWC 2026 Online Qualifier - APAC": 35,
+    "EWC 2026 Online Qualifier - EMEA": 22,
+    "EWC 2026 Online Qualifier - Korea": 34,
+    "EWC 2026 Online Qualifier - South America": 30,
+    "Esports World Cup 2026": 39,
+    "HLL 2026 Spring Playoffs": 13,
+    "HLL 2026 Spring Split": 12,
+    "HLL 2026 Summer Split": 54,
+    "Hitpoint Masters 2026 Spring": 41,
+    "Hitpoint Masters 2026 Spring Playoffs": 24,
+    "Hitpoint Masters 2026 Summer": 26,
+    "KeSPA Cup 2026": 36,
+    "LCK 2026 Road to MSI": 20,
+    "LCK 2026 Rounds 1-2": 108,
+    "LCK 2026 Rounds 3-4": 98,
+    "LCK 2026 Season Play-In": 14,
+    "LCK 2026 Season Playoffs": 16,
+    "LCK CL 2026 Rounds 1-2": 100,
+    "LCK CL 2026 Rounds 3-4": 102,
+    "LCK CL 2026 Season Play-In": 11,
+    "LCK CL 2026 Season Playoffs": 8,
+    "LCP 2026 Split 2": 31,
+    "LCP 2026 Split 2 Playoffs": 32,
+    "LCP 2026 Split 3": 80,
+    "LCS 2026 Spring": 29,
+    "LCS 2026 Spring Playoffs": 29,
+    "LCS 2026 Summer": 56,
+    "LEC 2026 Spring Playoffs": 30,
+    "LEC 2026 Spring Season": 30,
+    "LEC 2026 Summer Season": 106,
+    "LES 2026 Spring": 26,
+    "LES 2026 Spring Playoffs": 16,
+    "LES 2026 Summer": 63,
+    "LES 2026 Summer Playoffs": 14,
+    "LFL 2026 Spring Playoffs": 37,
+    "LFL 2026 Summer Playoffs": 22,
+    "LIT 2026 Spring Playoffs": 22,
+    "LIT 2026 Summer Playoffs": 6,
+    "LJL 2026 Spring Series": 67,
+    "LJL 2026 Summer Championship": 29,
+    "LPLOL 2026 Spring Playoffs": 14,
+    "LPLOL 2026 Summer Split": 31,
+    "LRN 2026 Split 1 Playoffs": 22,
+    "LRN 2026 Split 2": 55,
+    "LRN 2026 Split 2 Playoffs": 19,
+    "LRS 2026 Split 1 Playoffs": 20,
+    "LRS 2026 Split 2": 66,
+    "LRS 2026 Split 2 Playoffs": 20,
+    "MSI 2026": 71,
+    "NACL 2026 Spring": 29,
+    "NACL 2026 Spring Playoffs": 37,
+    "NACL 2026 Summer": 67,
+    "NACL 2026 Summer Playoffs": 21,
+    "NLC 2026 Spring Playoffs": 18,
+    "NLC 2026 Summer Split": 91,
+    "PCS 2026 Spring Season": 29,
+    "PCS 2026 Summer Season": 25,
+    "Prime League 1st Div 2026 Spring Playoffs": 23,
+    "Prime League 1st Div 2026 Spring Split": 23,
+    "Prime League 1st Div 2026 Summer Playoffs": 9,
+    "Prime League 1st Div 2026 Summer Split": 55,
+    "Rift Legends 2026 Spring Playoffs": 15,
+    "Rift Legends 2026 Spring Split": 28,
+    "Rift Legends 2026 Summer Split": 31,
+    "Road Of Legends 2026 Spring Playoffs": 25,
+    "Road Of Legends 2026 Spring Split": 19,
+    "Road Of Legends 2026 Summer Split": 58,
+    "TCL 2026 Spring": 32,
+    "TCL 2026 Spring Playoffs": 22,
+    "TCL 2026 Summer": 38,
+    "VCS 2026 Summer": 34,
+    "VCS 2026 Summer Playoffs": 24
+  },
+  "rich_versus_core": {
+    "all": {
+      "core": {
+        "brier_game": 0.14359586486007986,
+        "games": 3097,
+        "logloss_game": 0.43600873075047186,
+        "observed_minus_predicted": 0.017508087861320114,
+        "states": 99408
+      },
+      "paired": {
+        "ci95": [
+          -0.001688034674748953,
+          0.0007761858034783897
+        ],
+        "clusters": 1179,
+        "delta_brier": -0.00043595554598989123,
+        "games": 3097
+      },
+      "rich": {
+        "brier_game": 0.14315990931408998,
+        "games": 3097,
+        "logloss_game": 0.4348905523311091,
+        "observed_minus_predicted": 0.013357269207549117,
+        "states": 99408
+      }
+    },
+    "excluding_2026-05": {
+      "core": {
+        "brier_game": 0.14493261541959418,
+        "games": 1965,
+        "logloss_game": 0.4391866103841459,
+        "observed_minus_predicted": 0.03188686100365791,
+        "states": 63431
+      },
+      "paired": {
+        "ci95": [
+          -0.001458795731027154,
+          0.001887989886445979
+        ],
+        "clusters": 752,
+        "delta_brier": 0.0002222296411621409,
+        "games": 1965
+      },
+      "rich": {
+        "brier_game": 0.14515484506075632,
+        "games": 1965,
+        "logloss_game": 0.43978001446001747,
+        "observed_minus_predicted": 0.016812653680288368,
+        "states": 63431
+      }
+    },
+    "excluding_2026-06": {
+      "core": {
+        "brier_game": 0.14200612828250628,
+        "games": 2769,
+        "logloss_game": 0.4321758206505698,
+        "observed_minus_predicted": 0.013691021888889897,
+        "states": 88707
+      },
+      "paired": {
+        "ci95": [
+          -0.0019345551809506676,
+          0.0006542203239082241
+        ],
+        "clusters": 1073,
+        "delta_brier": -0.0006408803649956157,
+        "games": 2769
+      },
+      "rich": {
+        "brier_game": 0.14136524791751065,
+        "games": 2769,
+        "logloss_game": 0.4304149362177885,
+        "observed_minus_predicted": 0.006673876569605214,
+        "states": 88707
+      }
+    },
+    "excluding_2026-07": {
+      "core": {
+        "brier_game": 0.14456662848039595,
+        "games": 2478,
+        "logloss_game": 0.43887312216634156,
+        "observed_minus_predicted": 0.017896399207712594,
+        "states": 79491
+      },
+      "paired": {
+        "ci95": [
+          -0.0017065668116720465,
+          0.0005428373798221974
+        ],
+        "clusters": 927,
+        "delta_brier": -0.0005807857822970237,
+        "games": 2478
+      },
+      "rich": {
+        "brier_game": 0.14398584269809891,
+        "games": 2478,
+        "logloss_game": 0.4373174609512325,
+        "observed_minus_predicted": 0.02472318444628708,
+        "states": 79491
+      }
+    },
+    "excluding_2026-08": {
+      "core": {
+        "brier_game": 0.14355584405840272,
+        "games": 2098,
+        "logloss_game": 0.43544217022297,
+        "observed_minus_predicted": 0.008607848643554105,
+        "states": 67178
+      },
+      "paired": {
+        "ci95": [
+          -0.0021457566840067176,
+          0.001093010581183788
+        ],
+        "clusters": 791,
+        "delta_brier": -0.0005076217716772369,
+        "games": 2098
+      },
+      "rich": {
+        "brier_game": 0.14304822228672548,
+        "games": 2098,
+        "logloss_game": 0.43432872779930004,
+        "observed_minus_predicted": 0.005175259470455242,
+        "states": 67178
+      }
+    },
+    "excluding_2026-09": {
+      "core": {
+        "brier_game": 0.14341837204806915,
+        "games": 3078,
+        "logloss_game": 0.4355082358331987,
+        "observed_minus_predicted": 0.017516415611637873,
+        "states": 98825
+      },
+      "paired": {
+        "ci95": [
+          -0.0016857611153841187,
+          0.000687138188722932
+        ],
+        "clusters": 1173,
+        "delta_brier": -0.0005063428110534934,
+        "games": 3078
+      },
+      "rich": {
+        "brier_game": 0.14291202923701563,
+        "games": 3078,
+        "logloss_game": 0.434224540713679,
+        "observed_minus_predicted": 0.013590408321377673,
+        "states": 98825
+      }
+    },
+    "hp_missing": {
+      "core": {
+        "brier_game": 0.15496677247306584,
+        "games": 2652,
+        "logloss_game": 0.4632179913755416,
+        "observed_minus_predicted": 0.0069166056592754295,
+        "states": 67144
+      },
+      "paired": {
+        "ci95": [
+          -0.0016716751320092604,
+          0.001291056363076707
+        ],
+        "clusters": 1124,
+        "delta_brier": -0.00021757315451737566,
+        "games": 2652
+      },
+      "rich": {
+        "brier_game": 0.15474919931854847,
+        "games": 2652,
+        "logloss_game": 0.4625911646879638,
+        "observed_minus_predicted": 0.0052167384730806,
+        "states": 67144
+      }
+    },
+    "hp_present": {
+      "core": {
+        "brier_game": 0.15692394313489894,
+        "games": 1020,
+        "logloss_game": 0.47376858028002955,
+        "observed_minus_predicted": 0.04212366784087987,
+        "states": 32264
+      },
+      "paired": {
+        "ci95": [
+          -0.003082258412002162,
+          0.0018080134806000045
+        ],
+        "clusters": 380,
+        "delta_brier": -0.0007281255204797588,
+        "games": 1020
+      },
+      "rich": {
+        "brier_game": 0.15619581761441914,
+        "games": 1020,
+        "logloss_game": 0.47182521815888284,
+        "observed_minus_predicted": 0.03045383843743518,
+        "states": 32264
+      }
+    },
+    "major": {
+      "core": {
+        "brier_game": 0.15238028952305208,
+        "games": 861,
+        "logloss_game": 0.46346422470936705,
+        "observed_minus_predicted": 0.0470086900386631,
+        "states": 28435
+      },
+      "paired": {
+        "ci95": [
+          -0.0023628072218342755,
+          0.0025801741916906496
+        ],
+        "clusters": 314,
+        "delta_brier": 0.00012429190554247505,
+        "games": 861
+      },
+      "rich": {
+        "brier_game": 0.15250458142859455,
+        "games": 861,
+        "logloss_game": 0.4638017684036975,
+        "observed_minus_predicted": 0.03794706244563523,
+        "states": 28435
+      }
+    },
+    "nonmajor": {
+      "core": {
+        "brier_game": 0.14021331135613574,
+        "games": 2236,
+        "logloss_game": 0.42543664653821384,
+        "observed_minus_predicted": 0.006148508937039122,
+        "states": 70973
+      },
+      "paired": {
+        "ci95": [
+          -0.0020538190670228505,
+          0.0007553160498035904
+        ],
+        "clusters": 865,
+        "delta_brier": -0.0006516858929350468,
+        "games": 2236
+      },
+      "rich": {
+        "brier_game": 0.13956162546320067,
+        "games": 2236,
+        "logloss_game": 0.42375792395968753,
+        "observed_minus_predicted": 0.0038886591995025374,
+        "states": 70973
+      }
+    },
+    "oe_prior_missing_or_even": {
+      "core": {
+        "brier_game": 0.15314015384212215,
+        "games": 360,
+        "logloss_game": 0.45947424941285353,
+        "observed_minus_predicted": -0.0008608840079076277,
+        "states": 11464
+      },
+      "paired": {
+        "ci95": [
+          -0.0015357758556077193,
+          0.005813094094776643
+        ],
+        "clusters": 137,
+        "delta_brier": 0.0020450912272469727,
+        "games": 360
+      },
+      "rich": {
+        "brier_game": 0.15518524506936912,
+        "games": 360,
+        "logloss_game": 0.4640315435122749,
+        "observed_minus_predicted": -0.0010695717904064465,
+        "states": 11464
+      }
+    },
+    "oe_prior_nonzero": {
+      "core": {
+        "brier_game": 0.14234049619601874,
+        "games": 2737,
+        "logloss_game": 0.4329222905902755,
+        "observed_minus_predicted": 0.019924174771412183,
+        "states": 87944
+      },
+      "paired": {
+        "ci95": [
+          -0.002010784519290635,
+          0.0004944531564859544
+        ],
+        "clusters": 1047,
+        "delta_brier": -0.0007622897945705529,
+        "games": 2737
+      },
+      "rich": {
+        "brier_game": 0.1415782064014482,
+        "games": 2737,
+        "logloss_game": 0.43105761231458756,
+        "observed_minus_predicted": 0.015254844201799758,
+        "states": 87944
+      }
+    }
+  },
+  "source_sha256": "372f32183aec15b776904045e034c0e5ddacfe9b860474ef3934edff3a374acc",
+  "verified_saved_metrics": {
+    "constrained_gam": {
+      "brier_game": 0.14359586486007986,
+      "games": 3097,
+      "logloss_game": 0.43600873075047186,
+      "observed_minus_predicted": 0.017508087861320114,
+      "states": 99408
+    },
+    "convex_ensemble": {
+      "brier_game": 0.14337655465918644,
+      "games": 3097,
+      "logloss_game": 0.4356813218126167,
+      "observed_minus_predicted": 0.013852519850708903,
+      "states": 99408
+    },
+    "gam_boost_stack": {
+      "brier_game": 0.14456615827762367,
+      "games": 3097,
+      "logloss_game": 0.4392040560841879,
+      "observed_minus_predicted": 0.007862224206850532,
+      "states": 99408
+    },
+    "hist_boost": {
+      "brier_game": 0.147033368029268,
+      "games": 3097,
+      "logloss_game": 0.4450467563538828,
+      "observed_minus_predicted": 0.007893601403817889,
+      "states": 99408
+    },
+    "lightgbm": {
+      "brier_game": 0.14644265794666284,
+      "games": 3097,
+      "logloss_game": 0.4435422042819377,
+      "observed_minus_predicted": 0.015158726181178054,
+      "states": 99408
+    },
+    "mlp": {
+      "brier_game": 0.14466055805401248,
+      "games": 3097,
+      "logloss_game": 0.4388854456142502,
+      "observed_minus_predicted": 0.007357561447745107,
+      "states": 99408
+    },
+    "monotone_ensemble": {
+      "brier_game": 0.1434610251576938,
+      "games": 3097,
+      "logloss_game": 0.4358827869456214,
+      "observed_minus_predicted": 0.013746441804124758,
+      "states": 99408
+    },
+    "monotone_hist_boost": {
+      "brier_game": 0.14596851029762695,
+      "games": 3097,
+      "logloss_game": 0.44222618365989047,
+      "observed_minus_predicted": 0.017286133104061463,
+      "states": 99408
+    },
+    "monotone_lightgbm": {
+      "brier_game": 0.14610469224435985,
+      "games": 3097,
+      "logloss_game": 0.44276680745769137,
+      "observed_minus_predicted": 0.008283647749384372,
+      "states": 99408
+    },
+    "monotone_rich_lightgbm": {
+      "brier_game": 0.15075557856899585,
+      "games": 3097,
+      "logloss_game": 0.4576714140335453,
+      "observed_minus_predicted": 0.009403124402468686,
+      "states": 99408
+    },
+    "rff_logit": {
+      "brier_game": 0.14503208950290308,
+      "games": 3097,
+      "logloss_game": 0.44046446728033173,
+      "observed_minus_predicted": 0.017766979270401065,
+      "states": 99408
+    },
+    "rich_gam": {
+      "brier_game": 0.14315990931408998,
+      "games": 3097,
+      "logloss_game": 0.4348905523311091,
+      "observed_minus_predicted": 0.013357269207549117,
+      "states": 99408
+    },
+    "rich_lightgbm": {
+      "brier_game": 0.15032010669971543,
+      "games": 3097,
+      "logloss_game": 0.456620463219592,
+      "observed_minus_predicted": 0.009687982341554739,
+      "states": 99408
+    },
+    "ridge_logit": {
+      "brier_game": 0.14591729966347522,
+      "games": 3097,
+      "logloss_game": 0.44226035389250246,
+      "observed_minus_predicted": 0.017801243322051633,
+      "states": 99408
+    },
+    "spline_gam": {
+      "brier_game": 0.14377718396536832,
+      "games": 3097,
+      "logloss_game": 0.4366055587644614,
+      "observed_minus_predicted": 0.017254926478018674,
+      "states": 99408
+    },
+    "unconstrained_gam": {
+      "brier_game": 0.14356472938491202,
+      "games": 3097,
+      "logloss_game": 0.4359101385538161,
+      "observed_minus_predicted": 0.01743417688919429,
+      "states": 99408
+    }
+  }
+}

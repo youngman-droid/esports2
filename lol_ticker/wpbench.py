@@ -12,7 +12,7 @@ import time
 
 import numpy as np
 
-from . import wpgam
+from . import wpgam, wpexposure
 
 
 log = logging.getLogger("wpbench")
@@ -96,7 +96,7 @@ def _stacked_arrays(base, game_train):
     team_oof, champ_oof = wpgam.oof_pregame(
         base["game_pre"][game_train], base["game_C"][game_train],
         base["game_y"][game_train], base["game_gid"][game_train],
-        base["champ_names"], k=5)
+        base["champ_names"], k=5, dates=base["game_dates"][game_train])
     prior = np.empty((len(game_train), 3), dtype=np.float64)
     prior[game_train, 0] = team_oof
     prior[game_train, 1] = champ_oof
@@ -113,7 +113,7 @@ def _stacked_arrays(base, game_train):
     cs_by_gid = wpgam.oof_champ_state(
         base["raw_X"], base["names"], base["raw_C"], base["raw_y"],
         base["raw_gid"], cs_rows, train_gids, n_champs,
-        k=wpgam.CHAMP_STATE_FOLDS)
+        k=wpgam.CHAMP_STATE_FOLDS, dates=base["game_dates"][game_train])
     prior[game_train, 2] = np.asarray([cs_by_gid[g] for g in train_gids])
     other = ~game_train
     if other.any():
@@ -132,7 +132,9 @@ def _stacked_arrays(base, game_train):
 
 
 def _ridge_design_fit(raw, t_min):
-    mean, std, lo, hi = wpgam._scale_fit(raw)
+    names = wpgam.PRIOR_INPUTS + wpgam.STATE_FEATURES
+    mean, std, lo, hi = wpgam._scale_fit(
+        raw, feature_names=names if raw.shape[1] == len(names) else None)
     z = wpgam._scale_apply(raw, mean, std, lo, hi)
     # Drop the first time-basis column because the classifier has an intercept.
     design = np.column_stack([wpgam.time_basis(t_min)[:, 1:], z])
@@ -145,7 +147,9 @@ def _ridge_design_apply(raw, t_min, scale):
 
 
 def _tree_design_fit(raw, t_min):
-    mean, std, lo, hi = wpgam._scale_fit(raw)
+    names = wpgam.PRIOR_INPUTS + wpgam.STATE_FEATURES
+    mean, std, lo, hi = wpgam._scale_fit(
+        raw, feature_names=names if raw.shape[1] == len(names) else None)
     z = wpgam._scale_apply(raw, mean, std, lo, hi)
     return np.column_stack([np.clip(t_min, 0.0, 60.0) / 45.0, z]), (mean, std, lo, hi)
 
@@ -355,14 +359,31 @@ def _paired_differences(predictions, y, gids, best, bootstrap=2000, seed=67):
     return out
 
 
-def run(dataset_path=None, output_path=RESULT_PATH, bootstrap=1000, quick=False):
+def _nested_calibration_stack(base, game_train):
+    """Rebuild the full stacked pipeline strictly before calibration dates."""
+    fit, calibration, cutoff = _date_blocks(base["game_dates"], game_train)
+    stacked = _stacked_arrays(base, fit)
+    calibration_rows = calibration[base["row_game"]]
+    return stacked, calibration_rows, {"fit_end": str(max(base["game_dates"][fit])),
+        "calibration_start": str(cutoff),
+        "calibration_end": str(max(base["game_dates"][calibration])),
+        "fit_games": int(fit.sum()), "calibration_games": int(calibration.sum())}
+
+
+def run(dataset_path=None, output_path=RESULT_PATH, bootstrap=1000, quick=False,
+        exposure_path=wpexposure.PATH):
     dataset_path = dataset_path or os.path.join(wpgam.OUT_DIR, "states.npz")
     started = time.time()
     base = _load_base(dataset_path)
-    inner = _stacked_arrays(base, base["inner_train"])
+    inventory = wpexposure.migrate(base["game_gid"], base["game_dates"], path=exposure_path)
+    if wpexposure.fresh_mask(inventory, base["game_gid"], base["game_dates"]).any():
+        raise ValueError("method search accepts consumed development outcomes only; filter the dataset first")
+    inner, inner_calibration, inner_provenance = _nested_calibration_stack(
+        base, base["inner_train"])
     inner_fit = inner["train"]
     validation = base["validation"][base["row_game"]]
     selected = {}
+    calibrations = {}
     validation_predictions = {}
     validation_report = {}
     specs = _specs(quick)
@@ -376,8 +397,12 @@ def run(dataset_path=None, output_path=RESULT_PATH, bootstrap=1000, quick=False)
             model = _fit_method(
                 family, spec, inner["raw"][inner_fit], base["y"][inner_fit],
                 base["gid"][inner_fit], base["t_min"][inner_fit])
-            p = _predict_method(model, inner["raw"][validation],
-                                base["t_min"][validation])
+            calibration_p = _predict_method(model, inner["raw"][inner_calibration],
+                                             base["t_min"][inner_calibration])
+            coefficients = _calibration_diagnostics(calibration_p,
+                base["y"][inner_calibration], base["gid"][inner_calibration])
+            p = _apply_platt(_predict_method(model, inner["raw"][validation],
+                                base["t_min"][validation]), coefficients)
             metrics = _basic_metrics(p, base["y"][validation],
                                      base["gid"][validation])
             candidates.append({"spec": spec, "metrics": metrics,
@@ -387,6 +412,7 @@ def run(dataset_path=None, output_path=RESULT_PATH, bootstrap=1000, quick=False)
             if metrics["brier_game"] < best_score:
                 best_score, best_model = metrics["brier_game"], model
                 selected[family] = spec
+                calibrations[family] = coefficients
         validation_predictions[family] = _predict_method(
             best_model, inner["raw"][validation], base["t_min"][validation])
         validation_report[family] = {"selected": selected[family],
@@ -394,11 +420,9 @@ def run(dataset_path=None, output_path=RESULT_PATH, bootstrap=1000, quick=False)
 
     validation_predictions["pregame"] = wpgam._sigmoid(
         inner["raw"][validation, 0] + inner["raw"][validation, 1])
-    calibrations = {
-        name: _calibration_diagnostics(
-            p, base["y"][validation], base["gid"][validation])
-        for name, p in validation_predictions.items()
-    }
+    calibrations["pregame"] = _calibration_diagnostics(wpgam._sigmoid(
+        inner["raw"][inner_calibration, 0] + inner["raw"][inner_calibration, 1]),
+        base["y"][inner_calibration], base["gid"][inner_calibration])
     calibrated_validation = {
         name: _apply_platt(p, calibrations[name])
         for name, p in validation_predictions.items()
@@ -416,16 +440,17 @@ def run(dataset_path=None, output_path=RESULT_PATH, bootstrap=1000, quick=False)
 
     # The outer test is touched only after all family settings and blend
     # weights have been selected on the validation date block.
-    outer = _stacked_arrays(base, base["outer_train"])
+    outer, outer_calibration, outer_provenance = _nested_calibration_stack(
+        base, base["outer_train"])
     outer_fit = outer["train"]
-    outer_test = ~outer_fit
+    outer_test = (~base["outer_train"])[base["row_game"]]
     raw_test_predictions = {
         "pregame": wpgam._sigmoid(
             outer["raw"][outer_test, 0] + outer["raw"][outer_test, 1])
     }
-    raw_train_predictions = {
+    raw_calibration_predictions = {
         "pregame": wpgam._sigmoid(
-            outer["raw"][outer_fit, 0] + outer["raw"][outer_fit, 1])
+            outer["raw"][outer_calibration, 0] + outer["raw"][outer_calibration, 1])
     }
     fitted_seconds = {}
     for family in FAMILIES:
@@ -436,19 +461,14 @@ def run(dataset_path=None, output_path=RESULT_PATH, bootstrap=1000, quick=False)
             base["t_min"][outer_fit])
         raw_test_predictions[family] = _predict_method(
             model, outer["raw"][outer_test], base["t_min"][outer_test])
-        raw_train_predictions[family] = _predict_method(
-            model, outer["raw"][outer_fit], base["t_min"][outer_fit])
+        raw_calibration_predictions[family] = _predict_method(
+            model, outer["raw"][outer_calibration], base["t_min"][outer_calibration])
         fitted_seconds[family] = round(time.time() - tick, 2)
-    final_calibrations = {}
-    for name, p in raw_train_predictions.items():
-        slope = calibrations[name]["slope"]
-        pc = np.clip(p, 1e-5, 1.0 - 1e-5)
-        logits = np.log(pc / (1.0 - pc))
-        final_calibrations[name] = {
-            "slope": slope,
-            "intercept": wpgam._fit_calibration_intercept(
-                logits, base["y"][outer_fit], base["gid"][outer_fit], slope),
-        }
+    # Both coefficients are fitted only on later predictions of an entirely
+    # earlier pipeline. Never recenter the intercept on fitted training rows.
+    final_calibrations = {name: _calibration_diagnostics(
+        p, base["y"][outer_calibration], base["gid"][outer_calibration])
+        for name, p in raw_calibration_predictions.items()}
     test_predictions = {
         name: _apply_platt(p, final_calibrations[name])
         for name, p in raw_test_predictions.items()
@@ -470,6 +490,11 @@ def run(dataset_path=None, output_path=RESULT_PATH, bootstrap=1000, quick=False)
         test_report[name].update(paired[name])
 
     result = {
+        "kind": "wpx_method_benchmark_nested_calibration_v2",
+        "dataset_sha256": wpexposure.sha256(dataset_path),
+        "holdout_status": "consumed_development_only",
+        "calibration_protocol": "fit < calibration < validation/test; full pipeline rebuilt; both coefficients held out",
+        "calibration_blocks": {"selection": inner_provenance, "final": outer_provenance},
         "dataset": os.path.basename(dataset_path),
         "selection_metric": "validation game-balanced Brier",
         "split": {

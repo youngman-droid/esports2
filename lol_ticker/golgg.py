@@ -36,80 +36,80 @@ UA = "Mozilla/5.0 (compatible; lol-ticker-research/1.0; private esports research
 
 MAJOR_REGIONS = ["KR", "CN", "EUW", "NA", "LTA", "PCS", "VN", "BR", "WR", "INT"]
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS golgg_tournaments (
-    trname      TEXT PRIMARY KEY,
-    season      TEXT,
-    region      TEXT,
-    nbgames     INT,
-    first_game  DATE,
-    last_game   DATE,
-    synced_at   BIGINT
-);
-CREATE TABLE IF NOT EXISTS golgg_matches (
-    match_id    INT PRIMARY KEY,      -- gol.gg id of the match (= its first game)
-    trname      TEXT,
-    team1       TEXT, team2 TEXT,
-    score       TEXT,
-    patch       TEXT,
-    date        DATE,
-    game_ids    JSONB,                -- ordered list of game ids
-    fetched_at  BIGINT
-);
-CREATE TABLE IF NOT EXISTS golgg_games (
-    game_id     INT PRIMARY KEY,
-    match_id    INT,
-    game_num    INT,
-    trname      TEXT,
-    date        DATE,
-    patch       TEXT,
-    duration_s  INT,
-    blue_team   TEXT, red_team TEXT,
-    winner_side TEXT,                 -- 'blue' | 'red'
-    blue_kills INT, blue_towers INT, blue_dragons INT, blue_barons INT, blue_gold INT,
-    red_kills INT,  red_towers INT,  red_dragons INT,  red_barons INT,  red_gold INT,
-    blue_first_blood BOOLEAN, blue_first_pick BOOLEAN,
-    blue_bans JSONB, red_bans JSONB, blue_picks JSONB, red_picks JSONB,
-    blue_dragon_types JSONB, red_dragon_types JSONB,
-    fetched_at  BIGINT
-);
-CREATE INDEX IF NOT EXISTS idx_golgg_games_date ON golgg_games (date);
-CREATE TABLE IF NOT EXISTS golgg_players (
-    game_id     INT NOT NULL,
-    player_id   INT NOT NULL,
-    side        TEXT, role TEXT, slot INT,      -- slot 0-9: blue top..sup, red top..sup
-    player      TEXT, team TEXT, champion TEXT,
-    kills INT, deaths INT, assists INT, cs INT, gold INT, level INT,
-    stats       JSONB,                -- every row of the full-stats table
-    loadout     JSONB,                -- final items, spells, runes (ajax part 0)
-    PRIMARY KEY (game_id, player_id)
-);
-CREATE TABLE IF NOT EXISTS golgg_events (
-    game_id INT NOT NULL, seq INT NOT NULL,
-    time_s INT, side TEXT, player TEXT, champion TEXT,
-    action TEXT,                      -- kill|plate|grubs|herald|dragon:<type>|atakhan|baron|tower|inhib|nexus
-    target TEXT, target_champion TEXT, bounty INT,
-    PRIMARY KEY (game_id, seq)
-);
-CREATE TABLE IF NOT EXISTS golgg_timeline (
-    game_id INT NOT NULL, slot INT NOT NULL, minute INT NOT NULL,
-    gold INT, cs INT,
-    PRIMARY KEY (game_id, slot, minute)
-);
-CREATE TABLE IF NOT EXISTS golgg_builds (
-    game_id INT NOT NULL, player_id INT NOT NULL, seq INT NOT NULL,
-    build_time INT, event TEXT, item_id INT,
-    PRIMARY KEY (game_id, player_id, seq)
-);
-CREATE TABLE IF NOT EXISTS golgg_items (
-    item_id INT PRIMARY KEY, name TEXT, version TEXT
-);
-"""
+SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS golgg_tournaments (
+        trname      TEXT PRIMARY KEY,
+        season      TEXT,
+        region      TEXT,
+        nbgames     INT,
+        first_game  DATE,
+        last_game   DATE,
+        synced_at   BIGINT
+    );""",
+    """CREATE TABLE IF NOT EXISTS golgg_matches (
+        match_id    INT PRIMARY KEY,      -- gol.gg id of the match (= its first game)
+        trname      TEXT,
+        team1       TEXT, team2 TEXT,
+        score       TEXT,
+        patch       TEXT,
+        date        DATE,
+        game_ids    JSONB,                -- ordered list of game ids
+        fetched_at  BIGINT
+    );""",
+    """CREATE TABLE IF NOT EXISTS golgg_games (
+        game_id     INT PRIMARY KEY,
+        match_id    INT,
+        game_num    INT,
+        trname      TEXT,
+        date        DATE,
+        patch       TEXT,
+        duration_s  INT,
+        blue_team   TEXT, red_team TEXT,
+        winner_side TEXT,                 -- 'blue' | 'red'
+        blue_kills INT, blue_towers INT, blue_dragons INT, blue_barons INT, blue_gold INT,
+        red_kills INT,  red_towers INT,  red_dragons INT,  red_barons INT,  red_gold INT,
+        blue_first_blood BOOLEAN, blue_first_pick BOOLEAN,
+        blue_bans JSONB, red_bans JSONB, blue_picks JSONB, red_picks JSONB,
+        blue_dragon_types JSONB, red_dragon_types JSONB,
+        fetched_at  BIGINT
+    );""",
+    'CREATE INDEX IF NOT EXISTS idx_golgg_games_date ON golgg_games (date);',
+    """CREATE TABLE IF NOT EXISTS golgg_players (
+        game_id     INT NOT NULL,
+        player_id   INT NOT NULL,
+        side        TEXT, role TEXT, slot INT,      -- slot 0-9: blue top..sup, red top..sup
+        player      TEXT, team TEXT, champion TEXT,
+        kills INT, deaths INT, assists INT, cs INT, gold INT, level INT,
+        stats       JSONB,                -- every row of the full-stats table
+        loadout     JSONB,                -- final items, spells, runes (ajax part 0)
+        PRIMARY KEY (game_id, player_id)
+    );""",
+    """CREATE TABLE IF NOT EXISTS golgg_events (
+        game_id INT NOT NULL, seq INT NOT NULL,
+        time_s INT, side TEXT, player TEXT, champion TEXT,
+        action TEXT,                      -- kill|plate|grubs|herald|dragon:<type>|atakhan|baron|tower|inhib|nexus
+        target TEXT, target_champion TEXT, bounty INT,
+        PRIMARY KEY (game_id, seq)
+    );""",
+    """CREATE TABLE IF NOT EXISTS golgg_timeline (
+        game_id INT NOT NULL, slot INT NOT NULL, minute INT NOT NULL,
+        gold INT, cs INT,
+        PRIMARY KEY (game_id, slot, minute)
+    );""",
+    """CREATE TABLE IF NOT EXISTS golgg_builds (
+        game_id INT NOT NULL, player_id INT NOT NULL, seq INT NOT NULL,
+        build_time INT, event TEXT, item_id INT,
+        PRIMARY KEY (game_id, player_id, seq)
+    );""",
+    """CREATE TABLE IF NOT EXISTS golgg_items (
+        item_id INT PRIMARY KEY, name TEXT, version TEXT
+    );""",
+)
 
 
 def ensure_schema(conn):
-    conn.execute(SCHEMA)
-    conn.commit()
+    from . import db
+    db.apply_schema(conn, SCHEMA)
 
 
 # ------------------------------------------------------------------ fetching
