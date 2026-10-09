@@ -710,6 +710,25 @@ def api_shadow_results(params):
     return out
 
 
+_divergence_cache = (0.0, None)
+
+
+def api_live_divergence(params):
+    """Track record of live forecast-vs-market disagreements (15-min cache)."""
+    from . import shadow
+    global _divergence_cache
+    ts, data = _divergence_cache
+    if data is None or time.time() - ts > 900:
+        with _conn_lock:
+            conn = _db()
+            try:
+                data = shadow.divergence_record(conn)
+            finally:
+                conn.rollback()
+        _divergence_cache = (time.time(), data)
+    return data
+
+
 def api_live_games(params):
     from . import live
     try:
@@ -875,6 +894,7 @@ ROUTES = {
     "/api/status": lambda p: api_status(),
     "/api/live/series": api_live_series,
     "/api/live/games": api_live_games,
+    "/api/live/divergence": api_live_divergence,
     "/api/live/estimate": api_live_estimate,
     "/api/wpx/results": api_wpx_results,
     "/api/shadow/results": api_shadow_results,

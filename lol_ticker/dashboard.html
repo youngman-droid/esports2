@@ -316,10 +316,19 @@
   </section>
   <div id="lv-box" class="live-stats-panel" style="display:none;margin-top:6px">
     <div id="lv-line" style="font-size:14px"></div>
+    <div id="lv-diverge" style="font-size:13px;margin-top:4px" role="status"></div>
     <div id="lv-state" class="muted" style="margin-top:4px"></div>
     <div style="position:relative;height:160px;margin-top:6px"><canvas id="lvchart"></canvas></div>
     <div id="lv-totals" style="font-size:13px;margin-top:8px"></div>
     <div class="cols" style="margin-top:4px"><div id="lv-sb-blue"></div><div id="lv-sb-red"></div></div>
+  </div>
+
+  <div id="shadow-card" style="margin-top:14px;padding:8px 10px;border:1px solid #273247;border-radius:6px">
+    <h3 style="font-size:14px;margin:0 0 4px">Prospective shadow scorecard</h3>
+    <p class="muted" style="margin:0 0 6px">Every live forecast is logged before the outcome is known and scored once the game resolves. Game-balanced Brier; <b>market − forecast</b> below zero means the market was better. Rescored by the shadow recorder after each maintenance pass.</p>
+    <span id="shadow-stats" class="muted"></span>
+    <div id="shadow-table" style="margin:8px 0"></div>
+    <div style="position:relative;height:180px"><canvas id="shadowchart" aria-label="Running market minus forecast Brier by game"></canvas></div>
   </div>
 
     <p class="muted live-feed-note" style="margin-top:16px">Live stats appear when a game is in progress. Feed updates and exchange quotes keep their original timestamps.</p>
@@ -484,9 +493,6 @@ probability beyond team strength. Both sit next to the market-based numbers abov
   available retrospectively, the zero-lag row is an optimistic state-quality comparison, not a deployable latency
   claim; the +45 s row is closer to the live feed's minimum availability delay. Lower is better.</p>
   <button onclick="wpxResults()">Load</button>
-  <button onclick="shadowResults()">Prospective shadow</button>
-  <span id="shadow-stats" class="muted"></span>
-  <div id="shadow-table" style="margin:8px 0"></div>
   <div id="wpx-blends" style="margin:8px 0"></div>
   <div id="wpx-methods" style="margin:8px 0"></div>
   <div id="wpx-gam" style="margin:8px 0"></div>
@@ -1522,10 +1528,42 @@ async function wpxResults(){
   [...document.querySelectorAll('#wpx-fair tr')].forEach(tr => { const td = tr.children[4]; if (td && td.style.color){ td.style.color = td.textContent.startsWith('-') ? '#6fdbb0' : '#f7a2b4'; } });
 }
 
+let shadowChart = null;
+function shadowRunning(perGame){
+  // running game-balanced mean of (market − forecast) Brier, in capture order
+  let sum = 0;
+  return (perGame || []).map((g, i) => { sum += g.delta; return {x: i + 1, y: sum / (i + 1), g}; });
+}
+function shadowRenderChart(d){
+  const colours = {polymarket: '#b494f4', kalshi: '#6fdbb0'};
+  const datasets = ['polymarket', 'kalshi'].map(platform => {
+    const r = d.score?.platforms?.[platform];
+    return {label: platform, borderColor: colours[platform], pointRadius: 0, borderWidth: 1.5,
+            data: shadowRunning(r?.paired?.per_game)};
+  });
+  const lastX = Math.max(1, ...datasets.map(ds => ds.data.length));
+  datasets.push({label: 'tie', borderColor: '#5c6b85', borderDash: [4, 3], pointRadius: 0, borderWidth: 1,
+                 data: [{x: 1, y: 0}, {x: lastX, y: 0}]});
+  if (shadowChart){ shadowChart.data.datasets = datasets; shadowChart.update(); return; }
+  shadowChart = new Chart(document.getElementById('shadowchart'), {type: 'line', data: {datasets},
+    options: {animation: false, responsive: true, maintainAspectRatio: false, parsing: false,
+      scales: {x: {type: 'linear', title: {display: true, text: 'resolved games (capture order)'}},
+               y: {title: {display: true, text: 'market − forecast'}}},
+      plugins: {legend: {position: 'right', labels: {boxWidth: 10, font: {size: 11}}},
+        tooltip: {callbacks: {label: item => {
+          const g = item.raw.g;
+          return g ? `${item.dataset.label}: ${item.parsed.y.toFixed(4)} after ${g.blue_team} vs ${g.red_team}${g.league ? ' (' + g.league + ')' : ''}: game ${g.delta >= 0 ? '+' : ''}${g.delta.toFixed(4)}` : item.dataset.label;
+        }}}}}});
+}
 async function shadowResults(){
   const d = await getJSON('/api/shadow/results'), s = d.status || {};
   const st = document.getElementById('shadow-stats');
-  st.textContent = `protocol ${s.protocol_id || '—'} · ${s.games || 0} captured games / ${s.rows || 0} minute rows · outcomes ${JSON.stringify(s.outcomes || {})}`;
+  const scoredAt = d.score?.scored_at ? new Date(d.score.scored_at) : null;
+  const ageMin = scoredAt ? Math.round((Date.now() - scoredAt.getTime()) / 60000) : null;
+  const ageTxt = ageMin == null ? 'not scored yet' : `scored ${ageMin < 90 ? ageMin + ' min' : Math.round(ageMin / 60) + ' h'} ago`;
+  st.innerHTML = `protocol ${s.protocol_id || '—'} · ${s.games || 0} captured games / ${s.rows || 0} minute rows · outcomes ${JSON.stringify(s.outcomes || {})} · ` +
+    (ageMin != null && ageMin > 180 ? `<b style="color:#e8c570">${ageTxt} — is the shadow recorder running?</b>` : ageTxt);
+  if (d.score) shadowRenderChart(d);
   const rows = [];
   for (const platform of ['polymarket','kalshi']){
     const r = d.score?.platforms?.[platform];
@@ -1675,6 +1713,50 @@ function lvEnsureChart(){
         tooltip: {callbacks: {title: items => { const m = items[0].parsed.x; return Math.floor(m) + ':' + String(Math.round((m % 1) * 60)).padStart(2, '0'); }}}}}});
   wireDblClick('lvchart', () => lvChart);
 }
+// ------------------------------------------------- forecast vs market divergence
+// A live gap is shown together with the measured record of past gaps of the same
+// size at the same market lead (resolved shadow forecasts). Historically the
+// market has been the better side of most disagreements, because exchange quotes
+// lead the feed frame; so a gap is a prompt to check the model's inputs
+// (prior, roster, feed), not a signal on its own.
+let lvDivRecord = null, lvDivRecordTs = 0;
+async function lvDivergenceRecord(){
+  if (lvDivRecord && Date.now() - lvDivRecordTs < 900000) return lvDivRecord;
+  lvDivRecordTs = Date.now();   // also throttles retries after a failure
+  try { lvDivRecord = await getJSON('/api/live/divergence'); } catch (e) { /* keep the last record */ }
+  return lvDivRecord;
+}
+function lvDivergenceBucket(platform, leadS, gap){
+  const buckets = (lvDivRecord?.buckets || []).filter(b => b.platform === platform
+    && leadS >= b.lead_lo_s && (b.lead_hi_s == null || leadS < b.lead_hi_s) && Math.abs(gap) >= b.min_gap);
+  return buckets.sort((a, b) => b.min_gap - a.min_gap)[0] || null;
+}
+function lvDivergence(modelP, mk, leadS, gameState, g){
+  const el = document.getElementById('lv-diverge');
+  lvDivergenceRecord().catch(() => {});
+  if (modelP == null || leadS == null || gameState === 'finished'){ el.innerHTML = ''; return; }
+  const parts = [];
+  for (const platform of ['kalshi', 'polymarket']){
+    const q = mk?.[platform];
+    if (!q || q.p_blue == null) continue;
+    const gap = modelP - q.p_blue;
+    if (Math.abs(gap) < 0.05) continue;
+    const pp = `${gap >= 0 ? '+' : ''}${(gap * 100).toFixed(1)} pp`;
+    const b = lvDivergenceBucket(platform, leadS, gap);
+    const range = b ? `${b.lead_lo_s}${b.lead_hi_s == null ? '+' : '–' + b.lead_hi_s} s lead, gap ≥ ${Math.round(b.min_gap * 100)} pp` : '';
+    let record = 'no resolved history for this lead/gap yet';
+    if (b && b.games && b.market_minus_forecast != null){
+      const better = b.market_minus_forecast < 0 ? 'market' : 'model';
+      const ci = b.ci95 ? ` [${b.ci95[0].toFixed(3)}, ${b.ci95[1].toFixed(3)}]` : '';
+      const sure = b.ci95 && (b.ci95[0] > 0 || b.ci95[1] < 0);
+      record = `past ${b.games} games at ${range}: <b>${better}</b> better by ${Math.abs(b.market_minus_forecast).toFixed(3)} Brier${ci}${sure ? '' : ' (interval includes zero)'}`;
+    }
+    parts.push(`${platform} ${pp} vs model (quote leads the feed by ${Math.round(leadS)} s) — ${record}`);
+  }
+  el.innerHTML = parts.length
+    ? `<b style="color:#e8c570">Model–market divergence</b> <span class="muted">(P(${g.teams[0]}))</span>: ${parts.join(' · ')}. <span class="muted">Check roster, prior and feed lag before trusting the model side.</span>`
+    : '';
+}
 function lvRenderChart(){
   const adjusted = document.getElementById('lv-market-adjust').checked;
   const latest = lvMk[lvMk.length - 1];
@@ -1717,7 +1799,7 @@ async function lvRefresh(){
     return;
   }
   const g = d.game;
-  if (lvCurrent !== g.game_id){ lvHist = []; lvMk = []; lvMkLastQ = 0; lvSince = 0; lvCurrent = g.game_id; lvStartTs = null; lvBlend = null; lvBlendStatus = null; }
+  if (lvCurrent !== g.game_id){ lvHist = []; lvMk = []; lvMkLastQ = 0; lvSince = 0; lvCurrent = g.game_id; lvStartTs = null; lvBlend = null; lvBlendStatus = null; document.getElementById('lv-diverge').innerHTML = ''; }
   if (d.game_start_ts && lvStartTs && d.game_start_ts !== lvStartTs){
     // remake: same game id but the clock was re-anchored to a fresh draft
     lvHist = []; lvMk = []; lvMkLastQ = 0; lvSince = 0; lvBlend = null; lvBlendStatus = null;
@@ -1798,6 +1880,7 @@ async function lvRefresh(){
       `model <b style="color:#8ab8ff">P(${g.teams[0]}) = ${(st.p_blue*100).toFixed(1)}%</b> ` +
       `<span class="muted">(same model, champions removed ${(st.p_blue_no_champ*100).toFixed(1)}%)</span>` +
       (mkTxt ? ` · market: ${mkTxt}` : ' · market: n/a (no map market listed)') + blendTxt + terminalTxt + rosterTxt;
+    lvDivergence(st.p_blue, mk, lvMk.length ? lvMk[lvMk.length - 1].lead_s : null, st.game_state, g);
     const stateEl = document.getElementById('lv-state');
     const objectiveTimer = (side, seconds) => seconds > 0 ? `${side} active ${Math.floor(seconds/60)}:${String(Math.ceil(seconds%60)).padStart(2,'0')}` : null;
     const activeBarons = [objectiveTimer(g.teams[0], Number(st.baron_timer_blue_s || 0)), objectiveTimer(g.teams[1], Number(st.baron_timer_red_s || 0))].filter(Boolean);
@@ -1873,6 +1956,7 @@ function lvSchedule(){
 }
 document.getElementById('lv-int').addEventListener('change', lvSchedule);
 lvList().then(() => { lvRefresh().catch(() => {}); lvSchedule(); setInterval(lvList, 120000); });
+shadowResults().catch(() => {}); setInterval(() => shadowResults().catch(() => {}), 600000);
 
 function clearChart(){
   document.getElementById('chartbox').classList.remove('has-data');

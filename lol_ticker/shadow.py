@@ -793,6 +793,22 @@ def _paired_market_improvement(market, forecast, y, gids, bootstrap, seed):
     return out
 
 
+def _per_game_deltas(cohort, market, forecast, y, gids):
+    """Each game's mean (market − forecast) squared-error difference, in the
+    order the games were first captured, for the dashboard's running chart.
+    The mean of ``delta`` over these games is ``market_minus_forecast``."""
+    delta = (np.asarray(market) - y) ** 2 - (np.asarray(forecast) - y) ** 2
+    out = []
+    for g in dict.fromkeys(gids.tolist()):
+        mask = gids == g
+        first = cohort[int(np.argmax(mask))]
+        out.append({"game": g, "league": first.get("league"),
+                    "blue_team": first.get("blue_team"), "red_team": first.get("red_team"),
+                    "captured_at": str(first.get("captured_at")),
+                    "states": int(mask.sum()), "delta": float(delta[mask].mean())})
+    return out
+
+
 def _shadow_summary(p, y, gids, t_min, bootstrap, seed):
     p, y, gids, t_min = (np.asarray(x) for x in (p, y, gids, t_min))
     out = wpbench._basic_metrics(p, y, gids)
@@ -915,6 +931,7 @@ def _score_platforms(rows, bootstrap=5000, max_lead_s=MAX_MARKET_LEAD_S):
         paired = _paired_market_improvement(
             market, forecast, y, gids, bootstrap, seed=131 + i)
         paired["forecast"] = forecast_name
+        paired["per_game"] = _per_game_deltas(cohort, market, forecast, y, gids)
         if forecast_name == "blend":
             paired["market_minus_blend"] = paired["market_minus_forecast"]
         games = len(np.unique(gids))
@@ -934,6 +951,63 @@ def _score_platforms(rows, bootstrap=5000, max_lead_s=MAX_MARKET_LEAD_S):
             platforms[platform]["all_leads"] = _score_platforms(
                 quoted_rows, min(bootstrap, 2000), max_lead_s=None)[platform]
     return platforms
+
+
+DIVERGENCE_LEAD_BUCKETS_S = ((0, 45), (45, 90), (90, 200), (200, None))
+DIVERGENCE_GAPS = (0.05, 0.10)
+
+
+def divergence_buckets(rows, bootstrap=1000, seed=7):
+    """Who was right when the live forecast and a market disagreed.
+
+    For each platform × market-lead bucket × minimum |forecast − market| gap:
+    the game-balanced (market − forecast) Brier difference over resolved rows
+    (negative = the market was better) with a game-bootstrap 95% interval.
+    The live panel looks up the bucket matching the current lead and gap, so a
+    divergence is shown with its measured track record rather than as a cue.
+    """
+    out = []
+    for platform in ("polymarket", "kalshi"):
+        quoted = [r for r in rows if r.get(platform + "_p") is not None
+                  and r.get(platform + "_lead_s") is not None
+                  and r.get("blue_win") in (0, 1) and _market_event_ok(r, platform)]
+        for lo, hi in DIVERGENCE_LEAD_BUCKETS_S:
+            in_lead = [r for r in quoted if r[platform + "_lead_s"] >= lo
+                       and (hi is None or r[platform + "_lead_s"] < hi)]
+            for gap in DIVERGENCE_GAPS:
+                games = {}
+                for r in in_lead:
+                    f = r["recommended_p"] if r.get("recommended_p") is not None else r["model_p"]
+                    m, y = float(r[platform + "_p"]), float(r["blue_win"])
+                    if abs(float(f) - m) < gap:
+                        continue
+                    games.setdefault((r["game_id"], r["game_start_ts"]), []).append(
+                        (m - y) ** 2 - (float(f) - y) ** 2)
+                d = np.asarray([np.mean(v) for v in games.values()])
+                entry = {"platform": platform, "lead_lo_s": lo, "lead_hi_s": hi,
+                         "min_gap": gap, "games": int(len(d)),
+                         "rows": int(sum(len(v) for v in games.values())),
+                         "market_minus_forecast": float(d.mean()) if len(d) else None,
+                         "ci95": None}
+                if len(d) >= 2 and bootstrap > 0:
+                    draws = np.random.default_rng(seed).choice(
+                        d, size=(bootstrap, len(d)), replace=True).mean(axis=1)
+                    entry["ci95"] = [float(np.quantile(draws, 0.025)),
+                                     float(np.quantile(draws, 0.975))]
+                out.append(entry)
+    return out
+
+
+def divergence_record(conn, bootstrap=1000):
+    """``divergence_buckets`` over every resolved prospective forecast row."""
+    rows = conn.execute(
+        """SELECT p.game_id, p.game_start_ts, p.model_p, p.recommended_p,
+                  p.polymarket_p, p.kalshi_p, p.polymarket_lead_s, p.kalshi_lead_s,
+                  p.markets, o.blue_win
+           FROM shadow_predictions p JOIN shadow_outcomes o
+             USING (game_id, game_start_ts)
+           WHERE o.status='resolved' AND p.captured_at < o.recorded_at""").fetchall()
+    return {"rows": len(rows), "buckets": divergence_buckets([dict(r) for r in rows], bootstrap)}
 
 
 def _version_key(row):

@@ -142,6 +142,35 @@ class ProspectiveScoreTests(unittest.TestCase):
         self.assertEqual(pm["median_market_lead_s"], 45.0)
         self.assertFalse(pm["confirmatory_ready"])
 
+    def test_per_game_deltas_are_chronological_and_average_to_paired(self):
+        rows = [
+            self._row("g2", 1, 0, 0.4, 0.2),
+            self._row("g1", 1, 1, 0.6, 0.8),
+            self._row("g1", 2, 1, 0.6, 0.8),
+        ]
+        pm = shadow.score_rows(rows, bootstrap=0)["platforms"]["polymarket"]
+        per_game = pm["paired"]["per_game"]
+        self.assertEqual([g["game"] for g in per_game], ["g2:1002", "g1:1001"])
+        self.assertEqual([g["states"] for g in per_game], [1, 2])
+        self.assertAlmostEqual(sum(g["delta"] for g in per_game) / len(per_game),
+                               pm["paired"]["market_minus_forecast"])
+
+    def test_divergence_buckets_score_only_rows_past_the_gap(self):
+        fast = lambda *a: dict(self._row(*a), polymarket_lead_s=10.0)
+        agree = fast("g1", 1, 1, 0.52, None)        # |0.5-0.52| < 0.05
+        market_right = fast("g2", 1, 1, 0.9, None)   # market 0.9 vs forecast 0.5
+        model_right = fast("g3", 1, 0, 0.9, None)
+        slow = dict(self._row("g4", 1, 1, 0.9, None), polymarket_lead_s=120.0)
+        got = shadow.divergence_buckets([agree, market_right, model_right, slow], bootstrap=0)
+        pm = {(b["lead_lo_s"], b["min_gap"]): b for b in got if b["platform"] == "polymarket"}
+        fast = pm[(0, 0.05)]
+        self.assertEqual(fast["games"], 2)
+        # g2: 0.01 - 0.25 ; g3: 0.81 - 0.25  -> mean +0.16 (market worse on average)
+        self.assertAlmostEqual(fast["market_minus_forecast"], 0.16)
+        self.assertEqual(pm[(90, 0.10)]["games"], 1)
+        self.assertEqual(pm[(200, 0.05)]["games"], 0)
+        self.assertIsNone(pm[(200, 0.05)]["market_minus_forecast"])
+
     def test_platform_cohort_requires_market(self):
         rows = [self._row("g1", 1, 1, None, None)]
         got = shadow.score_rows(rows, bootstrap=0)
