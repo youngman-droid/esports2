@@ -223,6 +223,8 @@ class TeamNameTests(unittest.TestCase):
         self.assertEqual(draft.norm_team("Cloud9 Kia"), "cloud9")
         self.assertEqual(draft.norm_team("Cloud9"), "cloud9")
         self.assertEqual(draft.norm_team("Team Liquid Alienware"), "liquid")
+        self.assertEqual(draft.norm_team("Xi'an Team WE"), draft.norm_team("Team WE"))
+        self.assertEqual(draft.norm_team("LOS"), draft.norm_team("Los Grandes"))
         # 2026-08-29 audit: feed name on the left, stored name on the right
         self.assertEqual(draft.norm_team("NONGSHIM RED FORCE"),
                          draft.norm_team("Nongshim RedForce"))

@@ -108,6 +108,9 @@ _TEAM_ALIASES = {
     "gamespace m c": "gamespace mce",                   # Hellenic Legends League
     "up2u meavedron": "meavedron",                      # Rift Legends (sponsor prefix)
     "devils one x kmt": "dv1 instreamly",               # Rift Legends: Kalshi vs feed name
+    # 2026-10-09 dashboard-log audit: both ran with zeroed priors 09-18..10-04.
+    "xi an we": "we",                                   # LPL: city prefix on Team WE
+    "los": "los grandes",                               # CBLOL: the feed sends the tag
 }
 
 
