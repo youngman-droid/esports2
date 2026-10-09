@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Nightly data + model refresh.  06:30 local sits after the LCK/LPL
+         block and before LEC; the refresh takes ~20-25 min and leaves the
+         record/shadow/dashboard daemons running.  Install with:
+           cp scripts/com.lolticker.update.plist ~/Library/LaunchAgents/
+           launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lolticker.update.plist -->
+    <key>Label</key>
+    <string>com.lolticker.update</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>/Users/itch/Documents/Github/esports2/scripts/update.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/itch/Documents/Github/esports2</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/itch/Documents/Github/esports2/data/update.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/itch/Documents/Github/esports2/data/update.log</string>
+</dict>
+</plist>

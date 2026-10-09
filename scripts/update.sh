@@ -1,7 +1,8 @@
 #!/bin/sh
-# Full refresh: markets (discover/backfill), Oracle's Elixir CSV + draft tables,
-# gol.gg incremental scrape, then alignment + odds-free models + live model.
+# Data refresh: markets, Oracle's Elixir, gol.gg, alignment and source priors.
+# Live GAM refresh is gated while the frozen corrected-input candidate is scored.
 # Usage: sh scripts/update.sh [--no-record]   (logs: data/update.log)
+# Scheduled nightly by scripts/com.lolticker.update.plist (launchd, 06:30 local).
 set -eu
 cd "$(dirname "$0")/.."
 OE_2026_ID="1hnpbrUpBMS1TZI7IovfpKeZfWJH1Aptm"
@@ -17,6 +18,20 @@ wait_phase(){
     exit "$rc"
   fi
 }
+# Oracle's Elixir is a secondary source: its Drive download hits quota for
+# weeks at a time and the downloader then refuses the <1 MB stub, leaving the
+# previous CSV in place.  That must not block the gol.gg scrape, the recency
+# Elo, or shadow outcome resolution, so phase B only warns.
+wait_phase_soft(){
+  phase="$1"
+  pid="$2"
+  if wait "$pid"; then
+    log "phase ${phase} done"
+  else
+    rc=$?
+    log "phase ${phase} FAILED (rc=${rc}); continuing with the previous data (non-fatal)"
+  fi
+}
 
 log "phase A: markets (discover -> backfill)"
 ( python3 -m lol_ticker discover && python3 -m lol_ticker backfill ) > data/update_markets.log 2>&1 &
@@ -29,32 +44,56 @@ PB=$!
 log "phase C: gol.gg incremental scrape"
 ( python3 -m lol_ticker golgg --seasons S16 --regions major --since "$(date -u -v-21d +%F 2>/dev/null || date -u -d '21 days ago' +%F)" --workers 8 ) > data/update_golgg.log 2>&1 &
 PC=$!
+# Solo-queue pair prior: pages are re-fetched at most weekly while a patch is
+# live (~1,240 requests, ~25 min at 1 req/s), so most nights this is a no-op.
+# Runs beside the other phases; a failure only warns (the previous tables stay).
+log "phase S: solo-queue pair tables (Lolalytics refresh)"
+( python3 -m lol_ticker sqpairs refresh ) > data/update_sqpairs.log 2>&1 &
+PS=$!
 wait_phase A "$PA"
-wait_phase B "$PB"
+wait_phase_soft B "$PB"
 wait_phase C "$PC"
+wait_phase_soft S "$PS"
+# Standalone player rankings use the completed local Oracle CSV snapshot.
+# They have no connection to the deployed live model or exposure ledger.
+log "phase R: lane-informed player rankings"
+( OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 OMP_NUM_THREADS=1 python3 -m lol_ticker.player_ratings build --outcome wins --output data/player_ratings/ratings.json ) > data/update_player_ratings.log 2>&1 &
+PR=$!
 python3 scripts/feed_backfill.py --workers 6 > data/update_feed.log 2>&1
 log "feed hp backfill done"
-log "phase D: align -> wpa -> draftfree -> wpx prep/build -> live model"
-python3 -m lol_ticker align > data/update_align.log 2>&1
-python3 -m lol_ticker wpa > data/update_wpa.log 2>&1
-python3 -m lol_ticker draftfree > data/update_draftfree.log 2>&1
-( python3 -m lol_ticker wpx prep && python3 -m lol_ticker wpx build \
-    && python3 -m lol_ticker wpx fit ) > data/update_wpx.log 2>&1
-log "staged live stack passed validation and was promoted"
-python3 scripts/wpx_eval.py > data/update_wpx_eval.log 2>&1
-log "wpx evaluation complete"
+log "phase D: align -> wpa -> draftfree -> wpx prep"
+# Each step logs its own exit code so a failure names the step (set -e then
+# stops the run before the model refresh).
+step(){
+  name="$1"; logfile="$2"; shift 2
+  if "$@" > "$logfile" 2>&1; then
+    log "${name} rc=0"
+  else
+    rc=$?
+    log "${name} FAILED (rc=${rc}); see ${logfile}"
+    exit "$rc"
+  fi
+}
+step align data/update_align.log python3 -m lol_ticker align
+step wpa data/update_wpa.log python3 -m lol_ticker wpa
+step draftfree data/update_draftfree.log python3 -m lol_ticker draftfree
+step "wpx prep" data/update_wpx_prep.log python3 -m lol_ticker wpx prep
+# Corrected builds are immutable, explicitly dated artifacts. Default legacy
+# fitting/evaluation still reads states.npz, so chaining it after a v2 build
+# would silently score different inputs. Model selection, candidate freezing
+# and any promotion belong to the explicit corrected-input experiment.
+log "live GAM build/fit and historical evaluation gated pending corrected-input candidate evidence"
+# Attach outcomes (fresh gol.gg/OE rows, else exchange settlements) to every
+# pending shadow forecast and refresh the prospective score.
+if python3 -m lol_ticker shadow score >> data/update_shadow.log 2>&1; then
+  log "shadow outcomes resolved and scored"
+else
+  log "shadow resolve/score FAILED (non-fatal; see data/update_shadow.log)"
+fi
+wait_phase_soft R "$PR"
 if [ "${1:-}" != "--no-record" ]; then
-  if ! pgrep -f "lol_ticker record" > /dev/null; then
-    nohup python3 -m lol_ticker record > data/record.log 2>&1 &
-    log "record daemon started (pid $!)"
-  else
-    log "record daemon already running"
-  fi
-  if ! pgrep -f "lol_ticker shadow record" > /dev/null; then
-    nohup python3 -m lol_ticker shadow record > data/shadow.log 2>&1 &
-    log "prospective shadow recorder started (pid $!)"
-  else
-    log "prospective shadow recorder already running"
-  fi
+  # Detached (own session) so the daemons survive the shell that ran this
+  # refresh; see scripts/start_daemons.sh.
+  sh scripts/start_daemons.sh all | while read -r line; do log "$line"; done
 fi
 log "ALL DONE"
